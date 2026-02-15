@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "Revly",
+    "slug": "revly",
+    "scheme": "revly",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.biceptic.revly"
+    },
+    "android": {
+      "package": "com.biceptic.revly"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "d2cf3381-8d75-46e1-aa74-e89172e211df"
+      }
+    }
+  }
+}
