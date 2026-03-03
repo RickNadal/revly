@@ -1,21 +1,51 @@
 {
   "expo": {
-    "name": "Revly",
-    "slug": "revly",
-    "scheme": "revly",
+    "name": "Oranga",
+    "slug": "oranga",
+    "scheme": "oranga",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "plugins": [
+      "expo-router"
+    ],
+    "sdkVersion": "54.0.0",
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0B0B0F"
+    },
     "ios": {
-      "supportsTablet": true,
-      "bundleIdentifier": "com.biceptic.revly"
+      "supportsTablet": false,
+      "bundleIdentifier": "com.oranga.app",
+      "buildNumber": "1",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
-      "package": "com.biceptic.revly"
+      "package": "com.oranga.app",
+      "softwareKeyboardLayoutMode": "resize",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon-foreground.png",
+        "backgroundImage": "./assets/adaptive-icon-background.png"
+      }
     },
     "extra": {
+      "router": {
+        "origin": "http://localhost"
+      },
       "eas": {
-        "projectId": "d2cf3381-8d75-46e1-aa74-e89172e211df"
+        "projectId": "75b84389-267a-4626-b5f9-b3b8e2b9b8b6"
       }
     }
   }

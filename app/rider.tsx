@@ -1,6 +1,7 @@
 // app/rider.tsx
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Alert,
   Dimensions,
@@ -15,6 +16,8 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { supabase } from "../lib/supabase";
+
+type ProfileRole = "user" | "moderator" | "admin";
 
 type Post = {
   id: string;
@@ -33,6 +36,10 @@ const COLORS = {
   chip: "#1D1D2A",
   button: "#FFFFFF",
   buttonText: "#0B0B0F",
+  badgeBg: "rgba(255,255,255,0.10)",
+  badgeBorder: "#232334",
+  badgeGold: "#F5C451",
+  badgeGreen: "#7CFFB2",
 };
 
 const { width: SCREEN_W } = Dimensions.get("window");
@@ -45,13 +52,37 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
+function Badge({
+  label,
+  tone,
+}: {
+  label: string;
+  tone?: "default" | "gold" | "green";
+}) {
+  const color = tone === "gold" ? COLORS.badgeGold : tone === "green" ? COLORS.badgeGreen : COLORS.text;
+
+  return (
+    <View
+      style={{
+        paddingVertical: 3,
+        paddingHorizontal: 8,
+        borderRadius: 999,
+        backgroundColor: COLORS.badgeBg,
+        borderWidth: 1,
+        borderColor: COLORS.badgeBorder,
+      }}
+    >
+      <Text style={{ color, fontWeight: "900", fontSize: 11 }}>{label}</Text>
+    </View>
+  );
+}
+
 function openViewer(urls: string[], index: number) {
   if (!urls.length) return;
 
   router.push({
     pathname: "/viewer",
     params: {
-      // ✅ same stable pattern as your feed/profile
       urls: JSON.stringify(urls),
       index: String(index),
     },
@@ -72,7 +103,6 @@ function PostCarousel({
   const listRef = useRef<FlatList<string>>(null);
   const safeIndex = clamp(currentIndex, 0, Math.max(0, urls.length - 1));
 
-  // Restore scroll position if row gets recycled/re-mounted
   useEffect(() => {
     const idx = clamp(safeIndex, 0, Math.max(0, urls.length - 1));
     const t = setTimeout(() => {
@@ -131,20 +161,12 @@ function PostCarousel({
             }, 40);
           }}
           renderItem={({ item, index }) => (
-            <Pressable
-              onPress={() => openViewer(urls, index)}
-              style={{ width: CAROUSEL_W, height: CAROUSEL_H }}
-            >
-              <Image
-                source={{ uri: item }}
-                style={{ width: "100%", height: "100%" }}
-                resizeMode="cover"
-              />
+            <Pressable onPress={() => openViewer(urls, index)} style={{ width: CAROUSEL_W, height: CAROUSEL_H }}>
+              <Image source={{ uri: item }} style={{ width: "100%", height: "100%" }} resizeMode="cover" />
             </Pressable>
           )}
         />
 
-        {/* Counter */}
         {urls.length > 1 ? (
           <View
             style={{
@@ -164,7 +186,6 @@ function PostCarousel({
           </View>
         ) : null}
 
-        {/* Dots */}
         {urls.length > 1 ? (
           <View
             style={{
@@ -185,8 +206,7 @@ function PostCarousel({
                   width: 7,
                   height: 7,
                   borderRadius: 999,
-                  backgroundColor:
-                    i === safeIndex ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.35)",
+                  backgroundColor: i === safeIndex ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.35)",
                   transform: [{ scale: i === safeIndex ? 1.15 : 1 }],
                 }}
               />
@@ -199,11 +219,18 @@ function PostCarousel({
 }
 
 export default function RiderScreen() {
+  const { t } = useTranslation();
+
   const params = useLocalSearchParams<{ id: string }>();
   const riderId = params.id;
 
   const [me, setMe] = useState<string | null>(null);
-  const [name, setName] = useState("Rider");
+
+  const [name, setName] = useState(t("feed.rider_fallback", { defaultValue: "Rider" }));
+  const [role, setRole] = useState<ProfileRole>("user");
+  const [isPremium, setIsPremium] = useState(false);
+  const [isLegacy, setIsLegacy] = useState(false);
+
   const [posts, setPosts] = useState<Post[]>([]);
   const [isFollowing, setIsFollowing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -211,7 +238,6 @@ export default function RiderScreen() {
   const [followersCount, setFollowersCount] = useState(0);
   const [followingCount, setFollowingCount] = useState(0);
 
-  // Remember carousel page per post
   const [carouselIndexByPost, setCarouselIndexByPost] = useState<Record<string, number>>({});
 
   const load = async () => {
@@ -228,26 +254,24 @@ export default function RiderScreen() {
     const myId = session.user.id;
     setMe(myId);
 
-    // Name
+    // Name + badges
     const { data: prof, error: profErr } = await supabase
       .from("profiles")
-      .select("full_name")
+      .select("full_name, role, is_premium, is_legacy")
       .eq("id", riderId)
       .single();
 
     if (profErr) console.log("RIDER PROFILE ERROR:", profErr);
-    setName(prof?.full_name ?? "Rider");
+
+    setName(prof?.full_name ?? t("feed.rider_fallback", { defaultValue: "Rider" }));
+    setRole(((prof as any)?.role ?? "user") as ProfileRole);
+    setIsPremium(!!(prof as any)?.is_premium);
+    setIsLegacy(!!(prof as any)?.is_legacy);
 
     // Counts
-    const { count: followers } = await supabase
-      .from("follows")
-      .select("*", { count: "exact", head: true })
-      .eq("following_id", riderId);
+    const { count: followers } = await supabase.from("follows").select("*", { count: "exact", head: true }).eq("following_id", riderId);
 
-    const { count: following } = await supabase
-      .from("follows")
-      .select("*", { count: "exact", head: true })
-      .eq("follower_id", riderId);
+    const { count: following } = await supabase.from("follows").select("*", { count: "exact", head: true }).eq("follower_id", riderId);
 
     setFollowersCount(followers ?? 0);
     setFollowingCount(following ?? 0);
@@ -281,9 +305,7 @@ export default function RiderScreen() {
 
     const normalized = (p ?? []).map((row: any) => ({
       ...row,
-      post_media: (row.post_media ?? []).sort(
-        (a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0)
-      ),
+      post_media: (row.post_media ?? []).sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0)),
     }));
 
     setPosts(normalized);
@@ -304,7 +326,7 @@ export default function RiderScreen() {
       following_id: riderId,
     });
 
-    if (error) return Alert.alert("Follow failed", error.message);
+    if (error) return Alert.alert(t("rider.follow_failed_title", { defaultValue: "Follow failed" }), error.message);
 
     setIsFollowing(true);
     setFollowersCount((x) => x + 1);
@@ -313,13 +335,9 @@ export default function RiderScreen() {
   const unfollow = async () => {
     if (!me || !riderId || me === riderId) return;
 
-    const { error } = await supabase
-      .from("follows")
-      .delete()
-      .eq("follower_id", me)
-      .eq("following_id", riderId);
+    const { error } = await supabase.from("follows").delete().eq("follower_id", me).eq("following_id", riderId);
 
-    if (error) return Alert.alert("Unfollow failed", error.message);
+    if (error) return Alert.alert(t("rider.unfollow_failed_title", { defaultValue: "Unfollow failed" }), error.message);
 
     setIsFollowing(false);
     setFollowersCount((x) => Math.max(0, x - 1));
@@ -336,8 +354,18 @@ export default function RiderScreen() {
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
       <View style={{ flex: 1, paddingHorizontal: 16, paddingTop: 8 }}>
         {/* Header */}
-        <Text style={{ fontSize: 28, fontWeight: "900", color: COLORS.text }}>{name}</Text>
-        <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>Rider profile</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <Text style={{ fontSize: 28, fontWeight: "900", color: COLORS.text }}>{name}</Text>
+
+          {role === "admin" ? <Badge label={t("rider.badge_admin", { defaultValue: "ADMIN" })} tone="gold" /> : null}
+          {role === "moderator" ? <Badge label={t("rider.badge_mod", { defaultValue: "MOD" })} tone="gold" /> : null}
+          {isLegacy ? <Badge label={t("rider.badge_legacy", { defaultValue: "LEGACY" })} tone="gold" /> : null}
+          {isPremium ? <Badge label={t("rider.badge_premium", { defaultValue: "PREMIUM" })} tone="green" /> : null}
+        </View>
+
+        <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+          {t("rider.subtitle", { defaultValue: "Rider profile" })}
+        </Text>
 
         {/* Counts */}
         <View style={{ flexDirection: "row", gap: 14, marginTop: 12 }}>
@@ -353,7 +381,7 @@ export default function RiderScreen() {
             }}
           >
             <Text style={{ fontWeight: "900", color: COLORS.text }}>
-              Followers: {followersCount}
+              {t("rider.followers", { defaultValue: "Followers: {{count}}", count: followersCount })}
             </Text>
           </Pressable>
 
@@ -369,7 +397,7 @@ export default function RiderScreen() {
             }}
           >
             <Text style={{ fontWeight: "900", color: COLORS.text }}>
-              Following: {followingCount}
+              {t("rider.following", { defaultValue: "Following: {{count}}", count: followingCount })}
             </Text>
           </Pressable>
         </View>
@@ -389,20 +417,22 @@ export default function RiderScreen() {
             }}
           >
             <Text style={{ color: isFollowing ? COLORS.text : COLORS.buttonText, fontWeight: "900" }}>
-              {isFollowing ? "Following ✓ (tap to unfollow)" : "Follow"}
+              {isFollowing
+                ? t("rider.following_cta", { defaultValue: "Following ✓ (tap to unfollow)" })
+                : t("rider.follow_cta", { defaultValue: "Follow" })}
             </Text>
           </Pressable>
         ) : null}
 
         {/* Posts */}
         <Text style={{ marginTop: 18, fontWeight: "900", color: COLORS.text }}>
-          Posts ({posts.length})
+          {t("rider.posts_title", { defaultValue: "Posts ({{count}})", count: posts.length })}
         </Text>
 
         {loading ? (
-          <Text style={{ marginTop: 12, color: COLORS.muted }}>Loading...</Text>
+          <Text style={{ marginTop: 12, color: COLORS.muted }}>{t("common.loading", { defaultValue: "Loading…" })}</Text>
         ) : posts.length === 0 ? (
-          <Text style={{ marginTop: 12, color: COLORS.muted }}>No posts yet.</Text>
+          <Text style={{ marginTop: 12, color: COLORS.muted }}>{t("rider.no_posts_yet", { defaultValue: "No posts yet." })}</Text>
         ) : (
           <FlatList
             style={{ marginTop: 10 }}
@@ -425,23 +455,13 @@ export default function RiderScreen() {
                     borderColor: COLORS.border,
                   }}
                 >
-                  {/* Carousel */}
                   {urls.length > 0 ? (
-                    <PostCarousel
-                      postId={item.id}
-                      urls={urls}
-                      currentIndex={currentIndex}
-                      onIndexChange={setCarouselIndex}
-                    />
+                    <PostCarousel postId={item.id} urls={urls} currentIndex={currentIndex} onIndexChange={setCarouselIndex} />
                   ) : null}
 
-                  {item.caption ? (
-                    <Text style={{ marginTop: 10, color: COLORS.text }}>{item.caption}</Text>
-                  ) : null}
+                  {item.caption ? <Text style={{ marginTop: 10, color: COLORS.text }}>{item.caption}</Text> : null}
 
-                  <Text style={{ marginTop: 8, color: COLORS.muted, fontWeight: "700" }}>
-                    {new Date(item.created_at).toLocaleString()}
-                  </Text>
+                  <Text style={{ marginTop: 8, color: COLORS.muted, fontWeight: "700" }}>{new Date(item.created_at).toLocaleString()}</Text>
                 </View>
               );
             }}

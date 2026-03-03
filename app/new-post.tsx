@@ -1,12 +1,13 @@
+// app/new-post.tsx
 import * as FileSystem from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Alert, Image, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { supabase } from "../lib/supabase";
 
-// base64 -> Uint8Array
 function base64ToBytes(base64: string) {
   const binary = globalThis.atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -33,14 +34,33 @@ const COLORS = {
 };
 
 export default function NewPost() {
+  const { t } = useTranslation();
+
   const [caption, setCaption] = useState("");
   const [visibility, setVisibility] = useState<"public" | "private">("public");
   const [photos, setPhotos] = useState<Picked[]>([]);
   const [loading, setLoading] = useState(false);
 
+  const titleText = useMemo(() => t("new_post.title_default", { defaultValue: "New Post" }), [t]);
+
+  const subtitleText = useMemo(
+    () => t("new_post.subtitle_ride", { defaultValue: "Share a moment from your ride" }),
+    [t]
+  );
+
+  const primaryButtonText = useMemo(() => {
+    const posting = t("new_post.posting", { defaultValue: "Posting..." });
+    return loading ? posting : t("new_post.primary_ride", { defaultValue: "Post Ride" });
+  }, [loading, t]);
+
   const pickPhotos = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) return Alert.alert("Permission needed", "Allow photo access.");
+    if (!perm.granted) {
+      return Alert.alert(
+        t("new_post.permission_needed_title", { defaultValue: "Permission needed" }),
+        t("new_post.permission_needed_body", { defaultValue: "Allow photo access." })
+      );
+    }
 
     const res = await ImagePicker.launchImageLibraryAsync({
       allowsMultipleSelection: true,
@@ -64,13 +84,15 @@ export default function NewPost() {
     let base64 = photo.base64;
 
     if (!base64) {
-      base64 = await FileSystem.readAsStringAsync(photo.uri, {
-        encoding: "base64",
-      });
+      base64 = await FileSystem.readAsStringAsync(photo.uri, { encoding: "base64" });
     }
 
     if (!base64) {
-      throw new Error("Could not read image data (base64 missing). Try picking the photo again.");
+      throw new Error(
+        t("new_post.read_image_failed", {
+          defaultValue: "Could not read image data (base64 missing). Try picking the photo again.",
+        })
+      );
     }
 
     const bytes = base64ToBytes(base64);
@@ -87,7 +109,13 @@ export default function NewPost() {
   };
 
   const createPost = async () => {
-    if (photos.length === 0) return Alert.alert("Add photos", "Pick at least 1 photo.");
+    if (photos.length === 0) {
+      return Alert.alert(
+        t("new_post.add_photos_title", { defaultValue: "Add photos" }),
+        t("new_post.add_photos_body", { defaultValue: "Pick at least 1 photo." })
+      );
+    }
+
     setLoading(true);
 
     const { data: sessionData } = await supabase.auth.getSession();
@@ -99,16 +127,44 @@ export default function NewPost() {
     }
 
     const userId = session.user.id;
+    let postId: string | null = null;
 
-    const { data: post, error: postErr } = await supabase
+    const baseInsert: any = {
+      user_id: userId,
+      caption: caption.trim() || null,
+      visibility,
+    };
+
+    // Ride-only: always post_type = "ride"
+    const { data: post1, error: postErr1 } = await supabase
       .from("posts")
-      .insert({ user_id: userId, caption: caption.trim() || null, visibility })
+      .insert({ ...baseInsert, post_type: "ride" })
       .select("id")
       .single();
 
-    if (postErr || !post) {
+    if (postErr1) {
+      // fallback if post_type column doesn't exist
+      const { data: post2, error: postErr2 } = await supabase.from("posts").insert(baseInsert).select("id").single();
+
+      if (postErr2 || !post2) {
+        setLoading(false);
+        return Alert.alert(
+          t("new_post.post_failed_title", { defaultValue: "Post failed" }),
+          postErr2?.message ?? postErr1?.message ?? t("new_post.unknown_error", { defaultValue: "Unknown error" })
+        );
+      }
+
+      postId = post2.id;
+    } else {
+      postId = post1?.id ?? null;
+    }
+
+    if (!postId) {
       setLoading(false);
-      return Alert.alert("Post failed", postErr?.message ?? "Unknown error");
+      return Alert.alert(
+        t("new_post.post_failed_title", { defaultValue: "Post failed" }),
+        t("new_post.missing_post_id", { defaultValue: "Could not create post id" })
+      );
     }
 
     try {
@@ -116,7 +172,7 @@ export default function NewPost() {
         const url = await uploadImage(userId, photos[i]);
 
         const { error: mediaErr } = await supabase.from("post_media").insert({
-          post_id: post.id,
+          post_id: postId,
           url,
           sort_order: i,
         });
@@ -128,7 +184,10 @@ export default function NewPost() {
       router.replace("/");
     } catch (e: any) {
       setLoading(false);
-      Alert.alert("Upload failed", e?.message ?? "Unknown error");
+      Alert.alert(
+        t("new_post.upload_failed_title", { defaultValue: "Upload failed" }),
+        e?.message ?? t("new_post.unknown_error", { defaultValue: "Unknown error" })
+      );
     }
   };
 
@@ -136,15 +195,18 @@ export default function NewPost() {
     setPhotos((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const captionPlaceholder = t("new_post.caption_placeholder_ride", { defaultValue: "Caption (optional)" });
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
       <ScrollView style={{ flex: 1, backgroundColor: COLORS.bg }} contentContainerStyle={{ padding: 20, gap: 12 }}>
-        <Text style={{ fontSize: 28, fontWeight: "900", color: COLORS.text }}>New Post</Text>
-        <Text style={{ marginTop: -6, color: COLORS.muted, fontWeight: "700" }}>Share a moment from your ride</Text>
+        <Text style={{ fontSize: 28, fontWeight: "900", color: COLORS.text }}>{titleText}</Text>
+        <Text style={{ marginTop: -6, color: COLORS.muted, fontWeight: "700" }}>{subtitleText}</Text>
 
         <View style={{ flexDirection: "row", gap: 10, marginTop: 6 }}>
           <Pressable
             onPress={() => setVisibility("public")}
+            disabled={loading}
             style={{
               paddingVertical: 10,
               paddingHorizontal: 12,
@@ -155,12 +217,13 @@ export default function NewPost() {
             }}
           >
             <Text style={{ color: visibility === "public" ? COLORS.buttonText : COLORS.text, fontWeight: "900" }}>
-              Public
+              {t("new_post.visibility_public", { defaultValue: "Public" })}
             </Text>
           </Pressable>
 
           <Pressable
             onPress={() => setVisibility("private")}
+            disabled={loading}
             style={{
               paddingVertical: 10,
               paddingHorizontal: 12,
@@ -171,13 +234,13 @@ export default function NewPost() {
             }}
           >
             <Text style={{ color: visibility === "private" ? COLORS.buttonText : COLORS.text, fontWeight: "900" }}>
-              Private
+              {t("new_post.visibility_private", { defaultValue: "Private" })}
             </Text>
           </Pressable>
         </View>
 
         <TextInput
-          placeholder="Caption (optional)"
+          placeholder={captionPlaceholder}
           placeholderTextColor={COLORS.muted}
           value={caption}
           onChangeText={setCaption}
@@ -203,7 +266,9 @@ export default function NewPost() {
             alignItems: "center",
           }}
         >
-          <Text style={{ color: COLORS.buttonText, fontWeight: "900" }}>Pick Photos (max 6)</Text>
+          <Text style={{ color: COLORS.buttonText, fontWeight: "900" }}>
+            {t("new_post.pick_photos", { defaultValue: "Pick Photos (max 6)" })}
+          </Text>
         </Pressable>
 
         {photos.length > 0 ? (
@@ -223,6 +288,7 @@ export default function NewPost() {
                 />
                 <Pressable
                   onPress={() => removePhoto(i)}
+                  disabled={loading}
                   style={{
                     position: "absolute",
                     top: 6,
@@ -251,7 +317,11 @@ export default function NewPost() {
             }}
           >
             <Text style={{ color: COLORS.muted }}>
-              No photos selected yet. Tap <Text style={{ color: COLORS.text, fontWeight: "900" }}>Pick Photos</Text>.
+              {t("new_post.no_photos_prefix", { defaultValue: "No photos selected yet. Tap" })}{" "}
+              <Text style={{ color: COLORS.text, fontWeight: "900" }}>
+                {t("new_post.no_photos_pick_photos", { defaultValue: "Pick Photos" })}
+              </Text>
+              .
             </Text>
           </View>
         )}
@@ -267,7 +337,7 @@ export default function NewPost() {
             marginTop: 6,
           }}
         >
-          <Text style={{ color: COLORS.buttonText, fontWeight: "900" }}>{loading ? "Posting..." : "Post Ride"}</Text>
+          <Text style={{ color: COLORS.buttonText, fontWeight: "900" }}>{primaryButtonText}</Text>
         </Pressable>
 
         <Pressable
@@ -283,7 +353,7 @@ export default function NewPost() {
             borderColor: COLORS.border,
           }}
         >
-          <Text style={{ color: COLORS.text, fontWeight: "900" }}>Back</Text>
+          <Text style={{ color: COLORS.text, fontWeight: "900" }}>{t("common.back", { defaultValue: "Back" })}</Text>
         </Pressable>
       </ScrollView>
     </SafeAreaView>

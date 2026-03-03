@@ -1,8 +1,10 @@
+// app/(tabs)/notifications.tsx
 import { router, useFocusEffect } from "expo-router";
 import React, { useCallback, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Alert, FlatList, Pressable, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { supabase } from "../lib/supabase";
+import { supabase } from "../../lib/supabase";
 
 type NotificationBase = {
   id: string;
@@ -32,31 +34,33 @@ const COLORS = {
   danger: "#FF4D4D",
 };
 
-function timeAgo(iso: string) {
-  const t = new Date(iso).getTime();
-  const now = Date.now();
-  const diff = Math.max(0, now - t);
-
-  const sec = Math.floor(diff / 1000);
-  if (sec < 60) return `${sec}s ago`;
-
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-
-  const day = Math.floor(hr / 24);
-  if (day === 1) return "Yesterday";
-  if (day < 7) return `${day}d ago`;
-
-  return new Date(iso).toLocaleDateString();
-}
-
 export default function NotificationsScreen() {
+  const { t } = useTranslation();
+
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [autoMarked, setAutoMarked] = useState(false);
+
+  const timeAgo = (iso: string) => {
+    const tt = new Date(iso).getTime();
+    const now = Date.now();
+    const diff = Math.max(0, now - tt);
+
+    const sec = Math.floor(diff / 1000);
+    if (sec < 60) return t("notifications.ago_s", { count: sec, defaultValue: `${sec}s ago` });
+
+    const min = Math.floor(sec / 60);
+    if (min < 60) return t("notifications.ago_m", { count: min, defaultValue: `${min}m ago` });
+
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return t("notifications.ago_h", { count: hr, defaultValue: `${hr}h ago` });
+
+    const day = Math.floor(hr / 24);
+    if (day === 1) return t("notifications.yesterday", { defaultValue: "Yesterday" });
+    if (day < 7) return t("notifications.ago_d", { count: day, defaultValue: `${day}d ago` });
+
+    return new Date(iso).toLocaleDateString();
+  };
 
   const loadNotifications = async () => {
     setLoading(true);
@@ -79,7 +83,7 @@ export default function NotificationsScreen() {
 
     if (nErr) {
       console.log("NOTIFICATIONS ERROR:", nErr);
-      Alert.alert("Failed to load notifications", nErr.message);
+      Alert.alert(t("notifications.failed_load_title", { defaultValue: "Failed to load notifications" }), nErr.message);
       setItems([]);
       setLoading(false);
       return;
@@ -91,16 +95,9 @@ export default function NotificationsScreen() {
     const actorNameById = new Map<string, string>();
 
     if (actorIds.length > 0) {
-      const { data: profs, error: pErr } = await supabase
-        .from("profiles")
-        .select("id, full_name")
-        .in("id", actorIds);
-
+      const { data: profs, error: pErr } = await supabase.from("profiles").select("id, full_name").in("id", actorIds);
       if (pErr) console.log("PROFILES ERROR:", pErr);
-
-      for (const pr of profs ?? []) {
-        actorNameById.set(pr.id, pr.full_name ?? "Rider");
-      }
+      for (const pr of profs ?? []) actorNameById.set(pr.id, pr.full_name ?? t("feed.rider_fallback", { defaultValue: "Rider" }));
     }
 
     const postIds = Array.from(new Set(base.map((n) => n.post_id).filter(Boolean))) as string[];
@@ -114,7 +111,7 @@ export default function NotificationsScreen() {
 
     const merged: NotificationItem[] = base.map((n) => ({
       ...n,
-      actor_name: actorNameById.get(n.actor_id) ?? "Rider",
+      actor_name: actorNameById.get(n.actor_id) ?? t("feed.rider_fallback", { defaultValue: "Rider" }),
       post_caption: n.post_id ? captionByPostId.get(n.post_id) ?? null : null,
     }));
 
@@ -135,12 +132,10 @@ export default function NotificationsScreen() {
 
     const now = new Date().toISOString();
     const { error } = await supabase.from("notifications").update({ read_at: now }).in("id", ids);
-
     if (error) {
       console.log("MARK READ ERROR:", error);
       return;
     }
-
     setItems((prev) => prev.map((n) => (ids.includes(n.id) ? { ...n, read_at: now } : n)));
   };
 
@@ -153,48 +148,52 @@ export default function NotificationsScreen() {
   const markOneAsRead = async (id: string) => {
     const target = items.find((n) => n.id === id);
     if (!target || target.read_at) return;
-
     await markManyAsRead([id]);
   };
 
-  // ✅ Auto mark all currently loaded notifications as read (once per screen open)
   const autoMarkLoadedAsRead = async () => {
     if (autoMarked) return;
+
     const unreadIds = items.filter((n) => !n.read_at).map((n) => n.id);
     if (unreadIds.length === 0) {
       setAutoMarked(true);
       return;
     }
+
     setAutoMarked(true);
     await markManyAsRead(unreadIds);
   };
 
   const clearAll = async () => {
-    Alert.alert("Clear notifications?", "This will delete all notifications for your account.", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Clear all",
-        style: "destructive",
-        onPress: async () => {
-          const { data: sessionData } = await supabase.auth.getSession();
-          const session = sessionData.session;
-          if (!session) return router.replace("/sign-in");
+    Alert.alert(
+      t("notifications.clear_confirm_title", { defaultValue: "Clear notifications?" }),
+      t("notifications.clear_confirm_body", { defaultValue: "This will delete all notifications for your account." }),
+      [
+        { text: t("common.cancel", { defaultValue: "Cancel" }), style: "cancel" },
+        {
+          text: t("notifications.clear_confirm_button", { defaultValue: "Clear all" }),
+          style: "destructive",
+          onPress: async () => {
+            const { data: sessionData } = await supabase.auth.getSession();
+            const session = sessionData.session;
+            if (!session) return router.replace("/sign-in");
 
-          const me = session.user.id;
+            const me = session.user.id;
 
-          const { error } = await supabase.from("notifications").delete().eq("user_id", me);
-          if (error) return Alert.alert("Clear failed", error.message);
+            const { error } = await supabase.from("notifications").delete().eq("user_id", me);
+            if (error) return Alert.alert(t("notifications.clear_failed_title", { defaultValue: "Clear failed" }), error.message);
 
-          setItems([]);
+            setItems([]);
+          },
         },
-      },
-    ]);
+      ]
+    );
   };
 
   const renderText = (n: NotificationItem) => {
-    if (n.type === "follow") return `${n.actor_name} started following you`;
-    if (n.type === "like") return `${n.actor_name} liked your post`;
-    return `${n.actor_name} commented on your post`;
+    if (n.type === "follow") return t("notifications.follow_text", { name: n.actor_name, defaultValue: `${n.actor_name} started following you` });
+    if (n.type === "like") return t("notifications.like_text", { name: n.actor_name, defaultValue: `${n.actor_name} liked your post` });
+    return t("notifications.comment_text", { name: n.actor_name, defaultValue: `${n.actor_name} commented on your post` });
   };
 
   const openNotification = async (n: NotificationItem) => {
@@ -242,33 +241,48 @@ export default function NotificationsScreen() {
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
       <View style={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 16 }}>
-        <Text style={{ fontSize: 28, fontWeight: "900", color: COLORS.text }}>Notifications</Text>
-        <Text style={{ marginTop: 4, color: COLORS.muted, fontWeight: "700" }}>Unread: {unreadCount}</Text>
+        <Text style={{ fontSize: 28, fontWeight: "900", color: COLORS.text }}>
+          {t("notifications.title", { defaultValue: "Notifications" })}
+        </Text>
+        <Text style={{ marginTop: 4, color: COLORS.muted, fontWeight: "700" }}>
+          {t("notifications.unread", { count: unreadCount, defaultValue: `Unread: ${unreadCount}` })}
+        </Text>
 
         <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
-          <TopButton label="Back" onPress={() => router.back()} />
-          <TopButton label="Mark all read" onPress={markAllAsRead} disabled={unreadCount === 0} />
+          <TopButton label={t("notifications.back", { defaultValue: "Back" })} onPress={() => router.back()} />
+          <TopButton
+            label={t("notifications.mark_all_read", { defaultValue: "Mark all read" })}
+            onPress={markAllAsRead}
+            disabled={unreadCount === 0}
+          />
         </View>
 
         <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
           <TopButton
-            label="Auto-mark shown"
+            label={t("notifications.auto_mark_shown", { defaultValue: "Auto-mark shown" })}
             onPress={autoMarkLoadedAsRead}
             disabled={items.length === 0 || unreadCount === 0}
           />
-          <TopButton label="Clear all" onPress={clearAll} disabled={items.length === 0} danger />
+          <TopButton
+            label={t("notifications.clear_all", { defaultValue: "Clear all" })}
+            onPress={clearAll}
+            disabled={items.length === 0}
+            danger
+          />
         </View>
       </View>
 
       {loading ? (
         <View style={{ paddingHorizontal: 16 }}>
-          <Text style={{ color: COLORS.muted }}>Loading notifications...</Text>
+          <Text style={{ color: COLORS.muted }}>{t("notifications.loading", { defaultValue: "Loading notifications..." })}</Text>
         </View>
       ) : items.length === 0 ? (
         <View style={{ paddingHorizontal: 16 }}>
-          <Text style={{ color: COLORS.muted }}>No notifications yet.</Text>
+          <Text style={{ color: COLORS.muted }}>{t("notifications.empty_title", { defaultValue: "No notifications yet." })}</Text>
           <Text style={{ marginTop: 8, color: COLORS.muted }}>
-            You’ll get notifications when someone follows you, likes your post, or comments.
+            {t("notifications.empty_body", {
+              defaultValue: "You’ll get notifications when someone follows you, likes your post, or comments.",
+            })}
           </Text>
         </View>
       ) : (
@@ -310,12 +324,12 @@ export default function NotificationsScreen() {
                       </Text>
                     ) : null}
 
-                    <Text style={{ marginTop: 6, color: COLORS.muted, fontWeight: "800" }}>
-                      {timeAgo(item.created_at)}
-                    </Text>
+                    <Text style={{ marginTop: 6, color: COLORS.muted, fontWeight: "800" }}>{timeAgo(item.created_at)}</Text>
                   </View>
 
-                  <Text style={{ fontWeight: "900", color: COLORS.text }}>›</Text>
+                  <Text style={{ fontWeight: "900", color: COLORS.text }}>
+                    {t("notifications.chevron", { defaultValue: "›" })}
+                  </Text>
                 </View>
               </Pressable>
             );

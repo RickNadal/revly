@@ -1,8 +1,10 @@
+// app/(tabs)/search.tsx
 import { router, useFocusEffect } from "expo-router";
 import React, { useCallback, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { FlatList, Pressable, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { supabase } from "../lib/supabase";
+import { supabase } from "../../lib/supabase";
 
 type Row = { id: string; full_name: string };
 
@@ -17,6 +19,8 @@ const COLORS = {
 };
 
 export default function SearchScreen() {
+  const { t } = useTranslation();
+
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
@@ -49,27 +53,34 @@ export default function SearchScreen() {
       .ilike("full_name", `%${term}%`)
       .limit(30);
 
-    if (error) console.log("SEARCH ERROR:", error);
-
-    const list = (data ?? []).map((p: any) => ({
+    const list: Row[] = (data ?? []).map((p: any) => ({
       id: p.id,
-      full_name: p.full_name ?? "Rider",
+      full_name: p.full_name ?? t("feed.rider_fallback", { defaultValue: "Rider" }),
     }));
 
     setRows(list);
     setLoading(false);
+
+    // Keep console logs for dev only; no UI debug text.
+    if (error) console.log("SEARCH ERROR:", error);
   };
+
+  const showEmpty = q.trim().length >= 2 && !loading;
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
       <View style={{ flex: 1, paddingHorizontal: 16, paddingTop: 8 }}>
-        <Text style={{ fontSize: 26, fontWeight: "900", color: COLORS.text }}>Search Riders</Text>
-        <Text style={{ marginTop: 4, color: COLORS.muted, fontWeight: "700" }}>Find bikers and open their profile</Text>
+        <Text style={{ fontSize: 26, fontWeight: "900", color: COLORS.text }}>
+          {t("search.title", { defaultValue: "Search Riders" })}
+        </Text>
+        <Text style={{ marginTop: 4, color: COLORS.muted, fontWeight: "700" }}>
+          {t("search.subtitle", { defaultValue: "Find bikers and open their profile" })}
+        </Text>
 
         <TextInput
           value={q}
           onChangeText={runSearch}
-          placeholder="Type a name (min 2 letters)"
+          placeholder={t("search.placeholder", { defaultValue: "Type a name (min 2 letters)" })}
           placeholderTextColor={COLORS.muted}
           autoCapitalize="none"
           style={{
@@ -83,7 +94,11 @@ export default function SearchScreen() {
           }}
         />
 
-        {loading ? <Text style={{ marginTop: 12, color: COLORS.muted }}>Searching…</Text> : null}
+        {loading ? (
+          <Text style={{ marginTop: 12, color: COLORS.muted }}>
+            {t("search.searching", { defaultValue: "Searching…" })}
+          </Text>
+        ) : null}
 
         <FlatList
           style={{ marginTop: 12 }}
@@ -109,7 +124,11 @@ export default function SearchScreen() {
             </Pressable>
           )}
           ListEmptyComponent={
-            q.trim().length >= 2 ? <Text style={{ marginTop: 12, color: COLORS.muted }}>No riders found.</Text> : null
+            showEmpty ? (
+              <Text style={{ marginTop: 12, color: COLORS.muted }}>
+                {t("search.empty", { defaultValue: "No riders found." })}
+              </Text>
+            ) : null
           }
           contentContainerStyle={{ paddingBottom: 24 }}
         />
