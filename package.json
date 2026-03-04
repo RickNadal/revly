@@ -1,1 +1,8 @@
-{\n  \"name\": \"revly\",\n  \"version\": \"1.0.0\",\n  \"description\": \"A project description\",\n  \"main\": \"index.js\",\n  \"scripts\": {\n    \"test\": \"echo 'Error: no test specified' && exit 1\"\n  },\n  \"keywords\": [],\n  \"author\": \"Rick Nadal\",\n  \"license\": \"ISC\",\n  \"dependencies\": {\n    \"google-mobile-ads\": \"latest\",\n    \"existing-dependency-1\": \"^1.0.0\",\n    \"existing-dependency-2\": \"^2.0.0\"\n  }\n}
+{
+  "dependencies": {
+    "google-mobile-ads": "^x.x.x",
+    "expo-constants": "^x.x.x",
+    "existing-dependency-1": "existing-version-1",
+    "existing-dependency-2": "existing-version-2"
+  }
+}
