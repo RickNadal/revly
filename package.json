@@ -1,4 +1,6 @@
 {
+  "name": "oranga",
+  "version": "1.0.0",
   "dependencies": {
     "google-mobile-ads": "^x.x.x",
     "expo-constants": "^x.x.x",
