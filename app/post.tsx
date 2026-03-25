@@ -76,6 +76,26 @@ function isDuplicateKeyError(err: any) {
   return false;
 }
 
+function formatSupabaseError(err: any) {
+  const parts: string[] = [];
+
+  if (err?.message) parts.push(`message: ${String(err.message)}`);
+  if (err?.details) parts.push(`details: ${String(err.details)}`);
+  if (err?.hint) parts.push(`hint: ${String(err.hint)}`);
+  if (err?.code) parts.push(`code: ${String(err.code)}`);
+  if (err?.status) parts.push(`status: ${String(err.status)}`);
+
+  if (parts.length === 0) {
+    try {
+      return JSON.stringify(err, null, 2);
+    } catch {
+      return "Unknown error";
+    }
+  }
+
+  return parts.join("\n");
+}
+
 function openViewer(opts: {
   urls: string[];
   index: number;
@@ -302,7 +322,6 @@ export default function PostScreen() {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [deletingPost, setDeletingPost] = useState(false);
 
-  // Report modal state
   const [reportOpen, setReportOpen] = useState(false);
   const [reportReason, setReportReason] = useState<
     "spam" | "harassment" | "nudity" | "violence" | "hate" | "scam" | "other"
@@ -327,13 +346,11 @@ export default function PostScreen() {
     try {
       const { data, error } = await supabase.from("profiles").select("role").eq("id", userId).single();
       if (error) {
-        console.log("POST SCREEN ROLE ERROR:", error);
         setMyRole("user");
         return;
       }
       setMyRole(((data as any)?.role ?? "user") as ProfileRole);
-    } catch (e: any) {
-      console.log("POST SCREEN ROLE EXCEPTION:", e?.message ?? e);
+    } catch {
       setMyRole("user");
     }
   };
@@ -360,8 +377,8 @@ export default function PostScreen() {
       .single();
 
     if (pErr) {
-      console.log("POST LOAD ERROR:", pErr);
       setLoading(false);
+      Alert.alert("Post load failed", formatSupabaseError(pErr));
       return;
     }
 
@@ -369,7 +386,17 @@ export default function PostScreen() {
       (a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0)
     );
 
-    const { data: author } = await supabase.from("profiles").select("full_name").eq("id", p.user_id).single();
+    const { data: author, error: authorErr } = await supabase
+      .from("profiles")
+      .select("full_name")
+      .eq("id", p.user_id)
+      .single();
+
+    if (authorErr) {
+      setLoading(false);
+      Alert.alert("Author load failed", formatSupabaseError(authorErr));
+      return;
+    }
 
     const postObj: PostRow = {
       ...p,
@@ -383,15 +410,30 @@ export default function PostScreen() {
       .eq("post_id", postId)
       .order("created_at", { ascending: true });
 
-    if (cErr) console.log("COMMENTS LOAD ERROR:", cErr);
+    if (cErr) {
+      setPost(postObj);
+      setComments([]);
+      setLoading(false);
+      Alert.alert("Comments load failed", formatSupabaseError(cErr));
+      return;
+    }
 
     const userIds = Array.from(new Set((c ?? []).map((x: any) => x.user_id)));
     const nameById = new Map<string, string>();
 
     if (userIds.length > 0) {
       const { data: profs, error: p2Err } = await supabase.from("profiles").select("id, full_name").in("id", userIds);
-      if (p2Err) console.log("PROFILES ERROR:", p2Err);
-      for (const pr of profs ?? []) nameById.set(pr.id, pr.full_name ?? "Rider");
+      if (p2Err) {
+        setPost(postObj);
+        setComments((c ?? []).map((row: any) => ({ ...row, author_name: "Rider" })));
+        setLoading(false);
+        Alert.alert("Profiles load failed", formatSupabaseError(p2Err));
+        return;
+      }
+
+      for (const pr of profs ?? []) {
+        nameById.set(pr.id, pr.full_name ?? "Rider");
+      }
     }
 
     const commentList: CommentRow[] = (c ?? []).map((row: any) => ({
@@ -419,37 +461,86 @@ export default function PostScreen() {
 
   const addComment = async () => {
     if (!postId) return;
+
     const content = text.trim();
     if (!content) return;
+    if (sending) return;
 
     setSending(true);
 
-    const { data: sessionData } = await supabase.auth.getSession();
-    const session = sessionData.session;
-    if (!session) {
+    try {
+      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+
+      if (sessionErr) {
+        Alert.alert("Session failed", formatSupabaseError(sessionErr));
+        return;
+      }
+
+      const session = sessionData.session;
+      if (!session) {
+        router.replace("/sign-in");
+        return;
+      }
+
+      const me = session.user.id;
+
+      const { data: inserted, error: insertErr } = await supabase
+        .from("comments")
+        .insert({
+          post_id: postId,
+          user_id: me,
+          content,
+        })
+        .select("id, content, created_at, user_id")
+        .single();
+
+      if (insertErr) {
+        Alert.alert("Comment failed", formatSupabaseError(insertErr));
+        return;
+      }
+
+      const { data: myProfile, error: myProfileErr } = await supabase
+        .from("profiles")
+        .select("full_name")
+        .eq("id", me)
+        .single();
+
+      if (myProfileErr) {
+        Alert.alert("Profile load failed", formatSupabaseError(myProfileErr));
+        return;
+      }
+
+      const newComment: CommentRow = {
+        id: inserted.id,
+        content: inserted.content,
+        created_at: inserted.created_at,
+        user_id: inserted.user_id,
+        author_name: myProfile?.full_name ?? "Rider",
+      };
+
+      setComments((prev) => [...prev, newComment]);
+      setText("");
+      Keyboard.dismiss();
+
+      const { data: verifyRows, error: verifyErr } = await supabase
+        .from("comments")
+        .select("id")
+        .eq("id", inserted.id)
+        .limit(1);
+
+      if (verifyErr || !verifyRows || verifyRows.length === 0) {
+        Alert.alert(
+          "Comment verification failed",
+          verifyErr ? formatSupabaseError(verifyErr) : "Comment insert returned success but verification could not find the row."
+        );
+        await load();
+        return;
+      }
+
+      await load();
+    } finally {
       setSending(false);
-      router.replace("/sign-in");
-      return;
     }
-
-    const me = session.user.id;
-
-    const { error } = await supabase.from("comments").insert({
-      post_id: postId,
-      user_id: me,
-      content,
-    });
-
-    if (error) {
-      setSending(false);
-      Alert.alert("Comment failed", error.message);
-      return;
-    }
-
-    setText("");
-    setSending(false);
-    Keyboard.dismiss();
-    load();
   };
 
   const deleteComment = async (commentId: string) => {
@@ -462,7 +553,7 @@ export default function PostScreen() {
           const { error } = await supabase.from("comments").delete().eq("id", commentId);
 
           if (error) {
-            Alert.alert("Delete failed", error.message);
+            Alert.alert("Delete failed", formatSupabaseError(error));
             return;
           }
 
@@ -501,7 +592,7 @@ export default function PostScreen() {
             const { error } = await supabase.from("posts").delete().eq("id", post.id);
 
             if (error) {
-              Alert.alert("Delete failed", error.message);
+              Alert.alert("Delete failed", formatSupabaseError(error));
               router.replace({ pathname: "/post", params: { id: post.id } });
               return;
             }
@@ -530,7 +621,7 @@ export default function PostScreen() {
 
             const { error } = await supabase.rpc("mod_delete_post", { target_post: post.id });
             if (error) {
-              Alert.alert("Remove failed", error.message);
+              Alert.alert("Remove failed", formatSupabaseError(error));
               router.replace({ pathname: "/post", params: { id: post.id } });
               return;
             }
@@ -554,7 +645,12 @@ export default function PostScreen() {
   const submitReport = async () => {
     if (!post) return;
 
-    const { data: sessionData } = await supabase.auth.getSession();
+    const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+    if (sessionErr) {
+      Alert.alert("Session failed", formatSupabaseError(sessionErr));
+      return;
+    }
+
     const session = sessionData.session;
     if (!session) {
       closeReport();
@@ -581,7 +677,7 @@ export default function PostScreen() {
           return;
         }
 
-        Alert.alert("Report failed", error.message);
+        Alert.alert("Report failed", formatSupabaseError(error));
         return;
       }
 
@@ -640,7 +736,6 @@ export default function PostScreen() {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
-      {/* Header */}
       <View style={{ padding: 16, paddingBottom: 10 }}>
         <View style={{ flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
           <View style={{ flex: 1 }}>
@@ -650,7 +745,6 @@ export default function PostScreen() {
             </Text>
           </View>
 
-          {/* ⋯ menu button */}
           <Pressable
             onPress={openActions}
             hitSlop={10}
@@ -669,7 +763,6 @@ export default function PostScreen() {
           </Pressable>
         </View>
 
-        {/* Carousel */}
         {urls.length > 0 ? (
           <PostCarousel
             postId={post.id}
@@ -725,7 +818,6 @@ export default function PostScreen() {
         )}
       />
 
-      {/* Comment input */}
       <View
         style={{
           position: "absolute",
@@ -748,6 +840,12 @@ export default function PostScreen() {
           onChangeText={setText}
           placeholder="Write a comment..."
           placeholderTextColor={COLORS.muted}
+          autoCapitalize="sentences"
+          autoCorrect
+          editable={!sending}
+          returnKeyType="send"
+          onSubmitEditing={addComment}
+          blurOnSubmit={false}
           style={{
             flex: 1,
             borderWidth: 1,
@@ -772,7 +870,6 @@ export default function PostScreen() {
         </Pressable>
       </View>
 
-      {/* Actions modal */}
       <Modal transparent visible={actionsOpen} animationType="fade" onRequestClose={closeActions}>
         <Pressable
           onPress={closeActions}
@@ -845,7 +942,6 @@ export default function PostScreen() {
         </Pressable>
       </Modal>
 
-      {/* Report modal */}
       <Modal transparent visible={reportOpen} animationType="fade" onRequestClose={closeReport}>
         <Pressable
           onPress={closeReport}

@@ -37,6 +37,7 @@ export default function SignUp() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const onSignUp = async () => {
     const e = email.trim();
@@ -54,37 +55,56 @@ export default function SignUp() {
     setLoading(false);
 
     if (error) {
-      return Alert.alert(t("auth.sign_up_failed_title", { defaultValue: "Sign up failed" }), error.message);
+      return Alert.alert(
+        t("auth.sign_up_failed_title", { defaultValue: "Sign up failed" }),
+        error.message
+      );
     }
 
     Alert.alert(
       t("auth.sign_up_success_title", { defaultValue: "Account created" }),
-      t("auth.sign_up_success_body", { defaultValue: "Check your email if confirmation is required, then sign in." })
+      t("auth.sign_up_success_body", {
+        defaultValue: "Check your email if confirmation is required, then sign in.",
+      })
     );
     router.replace("/sign-in");
   };
 
-  // Make sure content can move above keyboard on BOTH iOS + Android
-  // Android typically needs "height"; iOS works best with "padding"
   const behavior = Platform.OS === "ios" ? "padding" : "height";
-
-  // Small offset prevents the top content from jumping under the status bar
   const keyboardOffset = Platform.OS === "ios" ? insets.top + 8 : 0;
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={behavior} keyboardVerticalOffset={keyboardOffset}>
+    <SafeAreaView
+      style={{ flex: 1, backgroundColor: COLORS.bg }}
+      edges={["top", "left", "right"]}
+    >
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={behavior}
+        keyboardVerticalOffset={keyboardOffset}
+      >
         <ScrollView
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
-          contentContainerStyle={[styles.container, { paddingBottom: Math.max(insets.bottom, 16) + 24 }]}
+          contentContainerStyle={[
+            styles.container,
+            { paddingBottom: Math.max(insets.bottom, 16) + 24 },
+          ]}
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.inner}>
-            <Image source={require("../assets/icon.png")} style={styles.logo} resizeMode="contain" />
-            <Text style={styles.tagline}>{t("brand.tagline", { defaultValue: "Where bikers connect" })}</Text>
+            <Image
+              source={require("../assets/icon.png")}
+              style={styles.logo}
+              resizeMode="contain"
+            />
+            <Text style={styles.tagline}>
+              {t("brand.tagline", { defaultValue: "Where bikers connect" })}
+            </Text>
 
-            <Text style={styles.subtitle}>{t("auth.sign_up_title", { defaultValue: "Sign up" })}</Text>
+            <Text style={styles.subtitle}>
+              {t("auth.sign_up_title", { defaultValue: "Sign up" })}
+            </Text>
 
             <View style={styles.card}>
               <TextInput
@@ -101,22 +121,40 @@ export default function SignUp() {
                 returnKeyType="next"
               />
 
-              <TextInput
-                style={styles.input}
-                placeholder={t("auth.password", { defaultValue: "Password" })}
-                placeholderTextColor={COLORS.muted}
-                autoCapitalize="none"
-                autoCorrect={false}
-                textContentType="password"
-                autoComplete="password"
-                secureTextEntry
-                value={password}
-                onChangeText={setPassword}
-                returnKeyType="done"
-                onSubmitEditing={onSignUp}
-              />
+              <View style={styles.passwordWrap}>
+                <TextInput
+                  style={styles.passwordInput}
+                  placeholder={t("auth.password", { defaultValue: "Password" })}
+                  placeholderTextColor={COLORS.muted}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  textContentType="password"
+                  autoComplete="password"
+                  secureTextEntry={!showPassword}
+                  value={password}
+                  onChangeText={setPassword}
+                  returnKeyType="done"
+                  onSubmitEditing={onSignUp}
+                />
+                <Pressable
+                  onPress={() => setShowPassword((prev) => !prev)}
+                  hitSlop={10}
+                  style={({ pressed }) => [
+                    styles.passwordToggle,
+                    pressed ? styles.passwordTogglePressed : null,
+                  ]}
+                >
+                  <Text style={styles.passwordToggleText}>
+                    {showPassword ? "Hide" : "Show"}
+                  </Text>
+                </Pressable>
+              </View>
 
-              <Pressable style={[styles.button, loading ? { opacity: 0.7 } : null]} onPress={onSignUp} disabled={loading}>
+              <Pressable
+                style={[styles.button, loading ? styles.disabled : null]}
+                onPress={onSignUp}
+                disabled={loading}
+              >
                 <Text style={styles.buttonText}>
                   {loading
                     ? t("common.loading_dots", { defaultValue: "..." })
@@ -125,7 +163,9 @@ export default function SignUp() {
               </Pressable>
 
               <Link href="/sign-in" style={styles.link}>
-                {t("auth.have_account_sign_in", { defaultValue: "Already have an account? Sign in" })}
+                {t("auth.have_account_sign_in", {
+                  defaultValue: "Already have an account? Sign in",
+                })}
               </Link>
             </View>
           </View>
@@ -146,10 +186,23 @@ const styles = StyleSheet.create({
   inner: {
     gap: 12,
   },
-  logo: { width: 288, height: 288, alignSelf: "center" },
-  tagline: { marginTop: -6, marginBottom: 10, color: COLORS.muted, fontWeight: "700", textAlign: "center" },
-  subtitle: { fontSize: 18, color: COLORS.text, fontWeight: "800" },
-
+  logo: {
+    width: 288,
+    height: 288,
+    alignSelf: "center",
+  },
+  tagline: {
+    marginTop: -6,
+    marginBottom: 10,
+    color: COLORS.muted,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  subtitle: {
+    fontSize: 18,
+    color: COLORS.text,
+    fontWeight: "800",
+  },
   card: {
     backgroundColor: COLORS.card,
     borderWidth: 1,
@@ -158,7 +211,6 @@ const styles = StyleSheet.create({
     padding: 14,
     gap: 12,
   },
-
   input: {
     borderWidth: 1,
     borderColor: COLORS.inputBorder,
@@ -168,9 +220,52 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.inputBg,
     color: COLORS.text,
   },
-
-  button: { backgroundColor: COLORS.button, padding: 14, borderRadius: 12, alignItems: "center" },
-  buttonText: { color: COLORS.buttonText, fontSize: 16, fontWeight: "900" },
-
-  link: { marginTop: 6, color: COLORS.text, textDecorationLine: "underline", fontWeight: "800" },
+  passwordWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: COLORS.inputBorder,
+    borderRadius: 12,
+    backgroundColor: COLORS.inputBg,
+    paddingLeft: 12,
+    paddingRight: 10,
+  },
+  passwordInput: {
+    flex: 1,
+    paddingVertical: 12,
+    fontSize: 16,
+    color: COLORS.text,
+  },
+  passwordToggle: {
+    marginLeft: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+  },
+  passwordTogglePressed: {
+    opacity: 0.7,
+  },
+  passwordToggleText: {
+    color: COLORS.text,
+    fontWeight: "800",
+  },
+  button: {
+    backgroundColor: COLORS.button,
+    padding: 14,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  buttonText: {
+    color: COLORS.buttonText,
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  link: {
+    marginTop: 6,
+    color: COLORS.text,
+    textDecorationLine: "underline",
+    fontWeight: "800",
+  },
+  disabled: {
+    opacity: 0.7,
+  },
 });

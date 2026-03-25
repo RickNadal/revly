@@ -1,3 +1,4 @@
+// app/sign-in.tsx
 import { Link, router } from "expo-router";
 import React, { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -41,6 +42,7 @@ export default function SignIn() {
   const [loading, setLoading] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
   const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
     const showSub = Keyboard.addListener("keyboardDidShow", () => setKeyboardOpen(true));
@@ -191,20 +193,34 @@ export default function SignIn() {
               returnKeyType="next"
             />
 
-            <TextInput
-              style={styles.input}
-              placeholder={t("auth.password", { defaultValue: "Password" })}
-              placeholderTextColor={COLORS.muted}
-              autoCapitalize="none"
-              autoCorrect={false}
-              textContentType="password"
-              autoComplete="password"
-              secureTextEntry
-              value={password}
-              onChangeText={setPassword}
-              returnKeyType="done"
-              onSubmitEditing={onSignIn}
-            />
+            <View style={styles.passwordWrap}>
+              <TextInput
+                style={styles.passwordInput}
+                placeholder={t("auth.password", { defaultValue: "Password" })}
+                placeholderTextColor={COLORS.muted}
+                autoCapitalize="none"
+                autoCorrect={false}
+                textContentType="password"
+                autoComplete="password"
+                secureTextEntry={!showPassword}
+                value={password}
+                onChangeText={setPassword}
+                returnKeyType="done"
+                onSubmitEditing={onSignIn}
+              />
+              <Pressable
+                onPress={() => setShowPassword((prev) => !prev)}
+                hitSlop={10}
+                style={({ pressed }) => [
+                  styles.passwordToggle,
+                  pressed ? styles.passwordTogglePressed : null,
+                ]}
+              >
+                <Text style={styles.passwordToggleText}>
+                  {showPassword ? "Hide" : "Show"}
+                </Text>
+              </Pressable>
+            </View>
 
             <Pressable
               onPress={onForgotPassword}
@@ -283,6 +299,34 @@ const styles = StyleSheet.create({
     fontSize: 16,
     backgroundColor: COLORS.inputBg,
     color: COLORS.text,
+  },
+  passwordWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: COLORS.inputBorder,
+    borderRadius: 12,
+    backgroundColor: COLORS.inputBg,
+    paddingLeft: 12,
+    paddingRight: 10,
+  },
+  passwordInput: {
+    flex: 1,
+    paddingVertical: 12,
+    fontSize: 16,
+    color: COLORS.text,
+  },
+  passwordToggle: {
+    marginLeft: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+  },
+  passwordTogglePressed: {
+    opacity: 0.7,
+  },
+  passwordToggleText: {
+    color: COLORS.text,
+    fontWeight: "800",
   },
   forgotWrap: {
     alignSelf: "flex-end",
