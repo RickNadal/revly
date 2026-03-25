@@ -26,7 +26,7 @@
     },
     "android": {
       "package": "com.oranga.app",
-      "versionCode": 2,
+      "versionCode": 20,
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon-foreground.png",
