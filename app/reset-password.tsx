@@ -12,7 +12,7 @@ import {
     View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { supabase } from "../lib/supabase";
+import { signOutSafely, supabase } from "../lib/supabase";
 
 const COLORS = {
   bg: "#0B0B0F",
@@ -190,7 +190,7 @@ export default function ResetPasswordScreen() {
       {
         text: "OK",
         onPress: async () => {
-          await supabase.auth.signOut();
+          await signOutSafely();
           router.replace("/sign-in");
         },
       },

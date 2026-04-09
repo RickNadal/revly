@@ -3,7 +3,8 @@ import { router, useFocusEffect } from "expo-router";
 import React, { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, FlatList, Pressable, Text, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { useNotificationBadge } from "../../components/navigation/NotificationBadge";
 import { supabase } from "../../lib/supabase";
 
 type NotificationBase = {
@@ -11,7 +12,7 @@ type NotificationBase = {
   created_at: string;
   user_id: string;
   actor_id: string;
-  type: "follow" | "like" | "comment";
+  type: "follow" | "like" | "comment" | "gift";
   post_id: string | null;
   comment_id: string | null;
   read_at: string | null;
@@ -36,10 +37,11 @@ const COLORS = {
 
 export default function NotificationsScreen() {
   const { t } = useTranslation();
+  const insets = useSafeAreaInsets();
+  const { setUnreadCount } = useNotificationBadge();
 
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [autoMarked, setAutoMarked] = useState(false);
 
   const timeAgo = (iso: string) => {
     const tt = new Date(iso).getTime();
@@ -64,7 +66,6 @@ export default function NotificationsScreen() {
 
   const loadNotifications = async () => {
     setLoading(true);
-    setAutoMarked(false);
 
     const { data: sessionData } = await supabase.auth.getSession();
     const session = sessionData.session;
@@ -117,6 +118,9 @@ export default function NotificationsScreen() {
 
     setItems(merged);
     setLoading(false);
+
+    const count = merged.filter((n) => !n.read_at).length;
+    setUnreadCount(count);
   };
 
   useFocusEffect(
@@ -137,6 +141,7 @@ export default function NotificationsScreen() {
       return;
     }
     setItems((prev) => prev.map((n) => (ids.includes(n.id) ? { ...n, read_at: now } : n)));
+    setUnreadCount(0);
   };
 
   const markAllAsRead = async () => {
@@ -149,19 +154,6 @@ export default function NotificationsScreen() {
     const target = items.find((n) => n.id === id);
     if (!target || target.read_at) return;
     await markManyAsRead([id]);
-  };
-
-  const autoMarkLoadedAsRead = async () => {
-    if (autoMarked) return;
-
-    const unreadIds = items.filter((n) => !n.read_at).map((n) => n.id);
-    if (unreadIds.length === 0) {
-      setAutoMarked(true);
-      return;
-    }
-
-    setAutoMarked(true);
-    await markManyAsRead(unreadIds);
   };
 
   const clearAll = async () => {
@@ -193,13 +185,14 @@ export default function NotificationsScreen() {
   const renderText = (n: NotificationItem) => {
     if (n.type === "follow") return t("notifications.follow_text", { name: n.actor_name, defaultValue: `${n.actor_name} started following you` });
     if (n.type === "like") return t("notifications.like_text", { name: n.actor_name, defaultValue: `${n.actor_name} liked your post` });
+    if (n.type === "gift") return t("notifications.gift_text", { name: n.actor_name, defaultValue: `${n.actor_name} sent you a gift` });
     return t("notifications.comment_text", { name: n.actor_name, defaultValue: `${n.actor_name} commented on your post` });
   };
 
   const openNotification = async (n: NotificationItem) => {
     await markOneAsRead(n.id);
 
-    if (n.type === "follow") {
+    if (n.type === "follow" || n.type === "gift") {
       router.push({ pathname: "/rider", params: { id: n.actor_id } });
       return;
     }
@@ -239,7 +232,7 @@ export default function NotificationsScreen() {
   );
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right", "bottom"]}>
       <View style={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 16 }}>
         <Text style={{ fontSize: 28, fontWeight: "900", color: COLORS.text }}>
           {t("notifications.title", { defaultValue: "Notifications" })}
@@ -251,20 +244,12 @@ export default function NotificationsScreen() {
         <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
           <TopButton label={t("notifications.back", { defaultValue: "Back" })} onPress={() => router.back()} />
           <TopButton
-            label={t("notifications.mark_all_read", { defaultValue: "Mark all read" })}
+            label={t("notifications.mark_all_read", { defaultValue: "All as read" })}
             onPress={markAllAsRead}
             disabled={unreadCount === 0}
           />
-        </View>
-
-        <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
           <TopButton
-            label={t("notifications.auto_mark_shown", { defaultValue: "Auto-mark shown" })}
-            onPress={autoMarkLoadedAsRead}
-            disabled={items.length === 0 || unreadCount === 0}
-          />
-          <TopButton
-            label={t("notifications.clear_all", { defaultValue: "Clear all" })}
+            label={t("notifications.clear_all", { defaultValue: "Wipe all" })}
             onPress={clearAll}
             disabled={items.length === 0}
             danger
@@ -291,7 +276,7 @@ export default function NotificationsScreen() {
           keyExtractor={(item) => item.id}
           onRefresh={loadNotifications}
           refreshing={loading}
-          contentContainerStyle={{ paddingBottom: 24 }}
+          contentContainerStyle={{ paddingBottom: Math.max(insets.bottom + 24, 40) }}
           renderItem={({ item }) => {
             const unread = !item.read_at;
 

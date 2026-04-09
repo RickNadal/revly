@@ -4,7 +4,7 @@ import { router, useFocusEffect } from "expo-router";
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, FlatList, Image, Pressable, Text, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { supabase } from "../lib/supabase";
 
 type ReportRow = {
@@ -50,6 +50,7 @@ const COLORS = {
 
 export default function ModerationScreen() {
   const { t } = useTranslation();
+  const insets = useSafeAreaInsets();
 
   const [meRole, setMeRole] = useState<ProfileRole>("user");
   const [tab, setTab] = useState<"open" | "resolved">("open");
@@ -166,7 +167,9 @@ export default function ModerationScreen() {
 
     const combined: ModerationItem[] = reportList.map((r) => {
       const post = postsById.get(r.post_id) ?? null;
-      const authorName = post ? nameById.get(post.user_id) ?? t("feed.rider_fallback", { defaultValue: "Rider" }) : t("moderation.unknown", { defaultValue: "Unknown" });
+      const authorName = post
+        ? nameById.get(post.user_id) ?? t("feed.rider_fallback", { defaultValue: "Rider" })
+        : t("moderation.unknown", { defaultValue: "Unknown" });
       return { report: r, post, author_name: authorName };
     });
 
@@ -246,7 +249,7 @@ export default function ModerationScreen() {
   }, [loading, tab, onlyTwoPlus, includeDismissed, t]);
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right", "bottom"]}>
       <View style={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 10 }}>
         <Pressable onPress={() => router.back()} style={{ paddingVertical: 8 }}>
           <Text style={{ color: COLORS.text, fontWeight: "900" }}>← {t("common.back", { defaultValue: "Back" })}</Text>
@@ -268,7 +271,7 @@ export default function ModerationScreen() {
               borderRadius: 14,
               backgroundColor: tab === "open" ? COLORS.button : COLORS.card,
               borderWidth: 1,
-              borderColor: COLORS.border,
+              borderColor: tab === "open" ? "#7CFFB2" : COLORS.border,
               alignItems: "center",
             }}
           >
@@ -285,7 +288,7 @@ export default function ModerationScreen() {
               borderRadius: 14,
               backgroundColor: tab === "resolved" ? COLORS.button : COLORS.card,
               borderWidth: 1,
-              borderColor: COLORS.border,
+              borderColor: tab === "resolved" ? "#7CFFB2" : COLORS.border,
               alignItems: "center",
             }}
           >
@@ -296,6 +299,48 @@ export default function ModerationScreen() {
         </View>
 
         <View style={{ flexDirection: "row", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+          <Pressable
+            onPress={() => router.push("/moderation-bans")}
+            style={{
+              paddingVertical: 10,
+              paddingHorizontal: 12,
+              borderRadius: 14,
+              backgroundColor: COLORS.card,
+              borderWidth: 1,
+              borderColor: COLORS.border,
+              alignItems: "center",
+              flexDirection: "row",
+              justifyContent: "center",
+              gap: 8,
+            }}
+          >
+            <Ionicons name="ban-outline" size={18} color={COLORS.text} />
+            <Text style={{ color: COLORS.text, fontWeight: "900" }}>
+              {t("moderation.banned_users_title", { defaultValue: "Banned users" })}
+            </Text>
+          </Pressable>
+
+          <Pressable
+            onPress={() => router.push("/moderation-campaigns")}
+            style={{
+              paddingVertical: 10,
+              paddingHorizontal: 12,
+              borderRadius: 14,
+              backgroundColor: COLORS.card,
+              borderWidth: 1,
+              borderColor: COLORS.border,
+              alignItems: "center",
+              flexDirection: "row",
+              justifyContent: "center",
+              gap: 8,
+            }}
+          >
+            <Ionicons name="megaphone-outline" size={18} color={COLORS.text} />
+            <Text style={{ color: COLORS.text, fontWeight: "900" }}>
+              {t("advertise_moderation.title", { defaultValue: "Campaign moderation" })}
+            </Text>
+          </Pressable>
+
           <Pressable
             onPress={() => setOnlyTwoPlus((p) => !p)}
             style={{
@@ -366,7 +411,10 @@ export default function ModerationScreen() {
       <FlatList
         data={filteredRows}
         keyExtractor={(x) => x.report.id}
-        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 30 }}
+        contentContainerStyle={{
+          paddingHorizontal: 16,
+          paddingBottom: Math.max(insets.bottom + 24, 30),
+        }}
         ListEmptyComponent={
           <View style={{ paddingTop: 18 }}>
             <Text style={{ color: COLORS.muted }}>{emptyText}</Text>

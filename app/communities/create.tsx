@@ -44,7 +44,7 @@ export default function CreateCommunityScreen() {
         borderRadius: 999,
         backgroundColor: active ? COLORS.button : COLORS.chip,
         borderWidth: 1,
-        borderColor: COLORS.border,
+        borderColor: active ? "#7CFFB2" : COLORS.border,
       }}
     >
       <Text style={{ color: active ? COLORS.buttonText : COLORS.text, fontWeight: "900" }}>{label}</Text>

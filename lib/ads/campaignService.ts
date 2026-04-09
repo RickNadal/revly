@@ -2,6 +2,12 @@
 import { supabase } from "../supabase";
 import type { AdCampaignRow, Placement, SponsoredAd, SponsoredTag } from "./sponsoredTypes";
 
+function isImageUrl(value: string | null | undefined) {
+  const v = String(value ?? "").trim().toLowerCase();
+  if (!v) return false;
+  return /\.(png|jpe?g|webp|gif)(\?|#|$)/i.test(v);
+}
+
 export function mapRowToAd(r: AdCampaignRow, t: (k: string, o?: any) => string): SponsoredAd | null {
   const sponsorType = String(r.sponsor_type ?? "").toLowerCase();
   const isHouse = sponsorType === "house";
@@ -20,6 +26,7 @@ export function mapRowToAd(r: AdCampaignRow, t: (k: string, o?: any) => string):
 
   const cta = r.cta_text?.trim() || t("ads.learn_more", { defaultValue: "Learn more" });
   const route = r.cta_url?.trim() || "/advertise";
+  const imageUrl = r.image_url?.trim() || (isImageUrl(route) ? route : null);
 
   return {
     id: r.id,
@@ -29,7 +36,7 @@ export function mapRowToAd(r: AdCampaignRow, t: (k: string, o?: any) => string):
     body,
     cta,
     route,
-    image_url: r.image_url ?? null,
+    image_url: imageUrl,
     weight: r.weight ?? 1,
   };
 }
@@ -37,7 +44,7 @@ export function mapRowToAd(r: AdCampaignRow, t: (k: string, o?: any) => string):
 export async function loadActiveCampaigns(placement: Placement, t: (k: string, o?: any) => string) {
   try {
     const { data, error } = await supabase
-      .from("ad_campaigns")
+      .from("active_ad_campaigns")
       .select(
         "id, title, sponsor_name, sponsor_type, badge_text, body, cta_text, cta_url, image_url, weight, placement, is_active, start_at, end_at, min_posts_between"
       )

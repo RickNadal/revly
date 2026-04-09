@@ -1,15 +1,17 @@
 // app/admin-feedback.tsx
 import { router, useFocusEffect } from "expo-router";
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Alert,
-  FlatList,
-  Pressable,
-  Text,
-  TextInput,
-  View,
+    Alert,
+    FlatList,
+    Pressable,
+    ScrollView,
+    Text,
+    TextInput,
+    View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import AnimatedSelectableButton from "../components/ui/AnimatedSelectableButton";
 import { supabase } from "../lib/supabase";
 
 type FeedbackRow = {
@@ -33,6 +35,15 @@ type ProfileRow = {
   is_legacy: boolean;
 };
 
+type UserBusinessAccess = {
+  tierId: string;
+  accountStatus: string;
+  subscriptionStatus: string;
+  dealerType: string;
+  dealerBypass: boolean;
+  storeBypass: boolean;
+};
+
 const COLORS = {
   bg: "#0B0B0F",
   card: "#12121A",
@@ -46,6 +57,37 @@ const COLORS = {
   warn: "#F5C451",
   ok: "#7CFFB2",
 };
+
+const ADMIN_REQ_TIMEOUT_MS = 15000;
+const ADMIN_BYPASS_REQ_TIMEOUT_MS = 20000;
+const ADMIN_AUTH_REFRESH_TIMEOUT_MS = 60000;
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+  function decodeJwtExpMs(token: string): number | null {
+    try {
+      const parts = token.split(".");
+      if (parts.length !== 3) return null;
+      const payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+      const padded = payload + "=".repeat((4 - (payload.length % 4)) % 4);
+      const decoded = atob(padded);
+      const parsed = JSON.parse(decoded);
+      const exp = Number(parsed?.exp ?? 0);
+      if (!Number.isFinite(exp) || exp <= 0) return null;
+      return exp * 1000;
+    } catch {
+      return null;
+    }
+  }
 
 export default function AdminFeedbackScreen() {
   const [tab, setTab] = useState<"feedback" | "users">("feedback");
@@ -64,6 +106,9 @@ export default function AdminFeedbackScreen() {
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<ProfileRow | null>(null);
   const [savingUser, setSavingUser] = useState(false);
+  const [businessAccess, setBusinessAccess] = useState<UserBusinessAccess | null>(null);
+  const [loadingBusinessAccess, setLoadingBusinessAccess] = useState(false);
+  const [savingBypass, setSavingBypass] = useState<"dealer" | "store" | null>(null);
 
   const ensureAdmin = async () => {
     const { data: sessionData } = await supabase.auth.getSession();
@@ -191,12 +236,19 @@ export default function AdminFeedbackScreen() {
         return;
       }
 
-      const { error } = await supabase.rpc("admin_set_user_flags", {
-        target_user: next.id,
-        new_role: next.role, // only 'user' | 'moderator'
-        new_is_premium: next.is_premium,
-        new_is_legacy: next.is_legacy,
-      });
+      const rpcResult = await withTimeout(
+        Promise.resolve(
+          supabase.rpc("admin_set_user_flags", {
+            target_user: next.id,
+            new_role: next.role, // only 'user' | 'moderator'
+            new_is_premium: next.is_premium,
+            new_is_legacy: next.is_legacy,
+          }) as any
+        ),
+        ADMIN_REQ_TIMEOUT_MS,
+        "save user"
+      );
+      const error = (rpcResult as any)?.error;
 
       if (error) {
         console.log("RPC ERROR:", error);
@@ -212,6 +264,183 @@ export default function AdminFeedbackScreen() {
     }
   };
 
+  const callAdminBypassApi = useCallback(async (body: Record<string, any>) => {
+    try {
+      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? "";
+      const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? "";
+      if (!supabaseUrl || !anonKey) {
+        return {
+          ok: false as const,
+          status: 0,
+          payload: { error: "Missing Supabase configuration in this build." },
+        };
+      }
+
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      let accessToken = sessionData.session?.access_token;
+      if (sessionError || !accessToken) {
+        return {
+          ok: false as const,
+          status: 401,
+          payload: { error: "Sign in required. Please sign in again." },
+        };
+      }
+
+      // If token is close to expiry, refresh once (with a generous timeout) before calling Edge Function.
+      const expMs = decodeJwtExpMs(accessToken);
+      const nearExpiry = expMs !== null && expMs - Date.now() < 2 * 60 * 1000;
+      if (nearExpiry) {
+        try {
+          const { data: refreshed, error: refreshError } = await withTimeout(
+            supabase.auth.refreshSession(),
+            ADMIN_AUTH_REFRESH_TIMEOUT_MS,
+            "refresh session for bypass"
+          );
+          const refreshedToken = refreshed.session?.access_token;
+          if (!refreshError && refreshedToken) accessToken = refreshedToken;
+        } catch {
+          // Keep current token as fallback; request below will return precise server status if it fails.
+        }
+      }
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), ADMIN_BYPASS_REQ_TIMEOUT_MS);
+      const response = await fetch(`${supabaseUrl}/functions/v1/admin-grant-business-bypass`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: anonKey,
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      const raw = await response.text();
+      let payload: any = null;
+      try { payload = JSON.parse(raw); } catch { payload = raw; }
+      return { ok: response.ok as boolean, status: response.status, payload };
+    } catch (err: any) {
+      return {
+        ok: false as const,
+        status: 0,
+        payload: { error: String(err?.message ?? "Bypass request failed") },
+      };
+    }
+  }, []);
+
+  const loadSelectedBusinessAccess = useCallback(async (userId: string) => {
+    setLoadingBusinessAccess(true);
+    try {
+      const res = await callAdminBypassApi({
+        action: "status",
+        targetUserId: userId,
+      });
+
+      if (!res.ok || !(res.payload as any)?.ok) {
+        setBusinessAccess(null);
+        return;
+      }
+
+      const accountStatus = String((res.payload as any)?.accountStatus ?? "none");
+      const subscriptionStatus = String((res.payload as any)?.subscriptionStatus ?? "none");
+      const dealerType = String((res.payload as any)?.dealerType ?? "");
+      const tierId = String((res.payload as any)?.tierId ?? "dealer_basic");
+      const dealerBypass = !!(res.payload as any)?.dealerBypass;
+      const storeBypass = !!(res.payload as any)?.storeBypass;
+
+      setBusinessAccess({
+        tierId,
+        accountStatus,
+        subscriptionStatus,
+        dealerType,
+        dealerBypass,
+        storeBypass,
+      });
+    } catch {
+      setBusinessAccess(null);
+    } finally {
+      setLoadingBusinessAccess(false);
+    }
+  }, [callAdminBypassApi]);
+
+  const grantBypass = useCallback(async (mode: "dealer" | "store") => {
+    if (!selected) return;
+    setSavingBypass(mode);
+    const watchdog = setTimeout(() => {
+      setSavingBypass(null);
+    }, ADMIN_BYPASS_REQ_TIMEOUT_MS + 3000);
+    try {
+      const tierId = businessAccess?.tierId || "dealer_basic";
+      const res = await callAdminBypassApi({
+        action: "grant",
+        targetUserId: selected.id,
+        mode,
+        tierId,
+        businessName: (selected.full_name ?? "Business account").trim() || "Business account",
+      });
+
+      if (!res.ok) {
+        const message =
+          (res.payload && typeof res.payload === "object" && (res.payload as any).error ? String((res.payload as any).error) : null) ??
+          (typeof res.payload === "string" && res.payload ? res.payload : null) ??
+          `HTTP ${res.status}`;
+        Alert.alert("Bypass failed", message);
+        return;
+      }
+
+      if (!(res.payload as any)?.ok) {
+        Alert.alert("Bypass failed", String((res.payload as any)?.error ?? "Unknown server error"));
+        return;
+      }
+
+      setBusinessAccess((prev) => {
+        const base = prev ?? {
+          tierId,
+          accountStatus: "none",
+          subscriptionStatus: "none",
+          dealerType: "",
+          dealerBypass: false,
+          storeBypass: false,
+        };
+        const nextDealerType = mode === "store"
+          ? (base.dealerType && /^store\|/i.test(base.dealerType) ? base.dealerType : "store|general")
+          : base.dealerType;
+        return {
+          ...base,
+          tierId,
+          accountStatus: "active",
+          subscriptionStatus: "active",
+          dealerType: nextDealerType,
+          dealerBypass: true,
+          storeBypass: mode === "store" ? true : !!base.storeBypass,
+        };
+      });
+
+      Alert.alert("Saved", mode === "store" ? "Store bypass granted." : "Dealer bypass granted.");
+      void loadSelectedBusinessAccess(selected.id);
+    } catch (err: any) {
+      const msg = String(err?.message ?? "");
+      if (msg.includes("timed out") || msg.includes("aborted")) {
+        Alert.alert("Bypass failed", "Request timed out. Please try again.");
+      } else {
+        Alert.alert("Bypass failed", err?.message ?? "Unknown error");
+      }
+    } finally {
+      clearTimeout(watchdog);
+      setSavingBypass(null);
+    }
+  }, [businessAccess?.tierId, callAdminBypassApi, loadSelectedBusinessAccess, selected]);
+
+  useEffect(() => {
+    if (!selected?.id) {
+      setBusinessAccess(null);
+      return;
+    }
+    void loadSelectedBusinessAccess(selected.id);
+  }, [loadSelectedBusinessAccess, selected?.id]);
+
   const RoleChip = ({
     label,
     active,
@@ -222,21 +451,13 @@ export default function AdminFeedbackScreen() {
     onPress: () => void;
   }) => {
     return (
-      <Pressable
+      <AnimatedSelectableButton
+        label={label}
+        active={active}
         onPress={onPress}
-        style={{
-          paddingVertical: 10,
-          paddingHorizontal: 12,
-          borderRadius: 999,
-          backgroundColor: active ? COLORS.button : COLORS.chip,
-          borderWidth: 1,
-          borderColor: COLORS.border,
-        }}
-      >
-        <Text style={{ color: active ? COLORS.buttonText : COLORS.text, fontWeight: "900" }}>
-          {label}
-        </Text>
-      </Pressable>
+        containerStyle={{ borderRadius: 999 }}
+        pressableStyle={{ borderRadius: 999, paddingHorizontal: 12 }}
+      />
     );
   };
 
@@ -312,62 +533,90 @@ export default function AdminFeedbackScreen() {
           Role: {meRole}
         </Text>
 
-        <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
-          <Pressable
-            onPress={() => setTab("feedback")}
-            style={{
-              flex: 1,
-              paddingVertical: 10,
-              borderRadius: 14,
-              backgroundColor: tab === "feedback" ? COLORS.white : COLORS.card,
-              borderWidth: 1,
-              borderColor: COLORS.border,
-              alignItems: "center",
-            }}
-          >
-            <Text style={{ color: tab === "feedback" ? COLORS.black : COLORS.text, fontWeight: "900" }}>
-              Feedback
-            </Text>
-          </Pressable>
-
-          <Pressable
-            onPress={() => setTab("users")}
-            style={{
-              flex: 1,
-              paddingVertical: 10,
-              borderRadius: 14,
-              backgroundColor: tab === "users" ? COLORS.white : COLORS.card,
-              borderWidth: 1,
-              borderColor: COLORS.border,
-              alignItems: "center",
-            }}
-          >
-            <Text style={{ color: tab === "users" ? COLORS.black : COLORS.text, fontWeight: "900" }}>
-              Users
-            </Text>
-          </Pressable>
-        </View>
-
-        <Pressable
-          onPress={() => (tab === "feedback" ? loadFeedback() : loadUsers())}
-          style={{
-            marginTop: 12,
-            backgroundColor: COLORS.button,
-            paddingVertical: 12,
-            borderRadius: 14,
-            alignItems: "center",
-          }}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{ flexDirection: "row", gap: 10, marginTop: 12, alignItems: "center", paddingRight: 8 }}
         >
-          <Text style={{ color: COLORS.buttonText, fontWeight: "900" }}>
-            {tab === "feedback"
-              ? loading
-                ? "Loading…"
-                : "Refresh Feedback"
-              : usersLoading
-              ? "Loading…"
-              : "Refresh Users"}
-          </Text>
-        </Pressable>
+          <AnimatedSelectableButton
+            label="Feedback"
+            active={tab === "feedback"}
+            onPress={() => setTab("feedback")}
+            borderRadius={999}
+            containerStyle={{ minWidth: 104 }}
+            pressableStyle={{ paddingVertical: 8, paddingHorizontal: 14 }}
+            textStyle={{ fontSize: 13, fontWeight: "900" }}
+          />
+
+          <AnimatedSelectableButton
+            label="Users"
+            active={tab === "users"}
+            onPress={() => setTab("users")}
+            borderRadius={999}
+            containerStyle={{ minWidth: 90 }}
+            pressableStyle={{ paddingVertical: 8, paddingHorizontal: 14 }}
+            textStyle={{ fontSize: 13, fontWeight: "900" }}
+          />
+
+          <AnimatedSelectableButton
+            label={tab === "feedback" ? (loading ? "Loading..." : "Refresh feedback") : usersLoading ? "Loading..." : "Refresh users"}
+            active={false}
+            onPress={() => (tab === "feedback" ? loadFeedback() : loadUsers())}
+            borderRadius={999}
+            containerStyle={{ minWidth: 148 }}
+            pressableStyle={{ paddingVertical: 8, paddingHorizontal: 14 }}
+            textStyle={{ fontSize: 13, fontWeight: "900" }}
+          />
+
+          <AnimatedSelectableButton
+            label="Make account house sponsor"
+            active={false}
+            onPress={() => {
+              if (selected) {
+                router.push({
+                  pathname: "/admin-house-sponsor",
+                  params: { userId: selected.id, userName: selected.full_name ?? "" },
+                });
+                return;
+              }
+              router.push("/admin-house-sponsor");
+            }}
+            borderRadius={999}
+            containerStyle={{ minWidth: 228 }}
+            pressableStyle={{ paddingVertical: 8, paddingHorizontal: 14 }}
+            textStyle={{ fontSize: 13, fontWeight: "900" }}
+          />
+
+          <AnimatedSelectableButton
+            label="Review house sponsor requests"
+            active={false}
+            onPress={() => router.push("/admin-house-sponsor-submissions")}
+            borderRadius={999}
+            containerStyle={{ minWidth: 236 }}
+            pressableStyle={{ paddingVertical: 8, paddingHorizontal: 14 }}
+            textStyle={{ fontSize: 13, fontWeight: "900" }}
+          />
+
+          <AnimatedSelectableButton
+            label="Dealer requests"
+            active={false}
+            onPress={() => router.push("/admin-dealer-applications")}
+            borderRadius={999}
+            containerStyle={{ minWidth: 140 }}
+            pressableStyle={{ paddingVertical: 8, paddingHorizontal: 14 }}
+            textStyle={{ fontSize: 13, fontWeight: "900" }}
+          />
+
+          <AnimatedSelectableButton
+            label="Store approvals"
+            active={false}
+            onPress={() => router.push("/admin-store-applications")}
+            borderRadius={999}
+            containerStyle={{ minWidth: 140 }}
+            pressableStyle={{ paddingVertical: 8, paddingHorizontal: 14 }}
+            textStyle={{ fontSize: 13, fontWeight: "900" }}
+          />
+        </ScrollView>
       </View>
 
       {tab === "feedback" ? (
@@ -484,8 +733,37 @@ export default function AdminFeedbackScreen() {
                   />
                 </View>
 
+                <View style={{ marginTop: 14, padding: 12, borderRadius: 14, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.bg }}>
+                  <Text style={{ color: COLORS.text, fontWeight: "900" }}>Business access bypass</Text>
+                  <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                    {loadingBusinessAccess
+                      ? "Loading access status..."
+                      : `Account: ${businessAccess?.accountStatus ?? "none"} • Subscription: ${businessAccess?.subscriptionStatus ?? "none"}`}
+                  </Text>
+                  <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                    {`Dealer type: ${businessAccess?.dealerType || "none"} • Tier: ${businessAccess?.tierId ?? "dealer_basic"}`}
+                  </Text>
+
+                  <View style={{ flexDirection: "row", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+                    <RoleChip
+                      label={savingBypass === "dealer" ? "Saving..." : businessAccess?.dealerBypass ? "Dealer bypass active" : "Grant dealer bypass"}
+                      active={!!businessAccess?.dealerBypass}
+                      onPress={() => {
+                        if (!savingBypass) void grantBypass("dealer");
+                      }}
+                    />
+                    <RoleChip
+                      label={savingBypass === "store" ? "Saving..." : businessAccess?.storeBypass ? "Store bypass active" : "Grant store bypass"}
+                      active={!!businessAccess?.storeBypass}
+                      onPress={() => {
+                        if (!savingBypass) void grantBypass("store");
+                      }}
+                    />
+                  </View>
+                </View>
+
                 <Pressable
-                  disabled={savingUser}
+                  disabled={savingUser || !!savingBypass}
                   onPress={() => selected && saveSelectedUser(selected)}
                   style={{
                     marginTop: 12,

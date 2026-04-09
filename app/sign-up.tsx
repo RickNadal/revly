@@ -34,24 +34,73 @@ export default function SignUp() {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
 
+  const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
   const onSignUp = async () => {
+    const n = fullName.trim();
     const e = email.trim();
     const p = password;
 
-    if (!e || !p) {
+    if (!n) {
+      return Alert.alert(
+        t("auth.missing_name", { defaultValue: "Missing name" }),
+        t("auth.enter_full_name", { defaultValue: "Please enter your full name." })
+      );
+    }
+
+    if (!e) {
+      return Alert.alert(
+        t("auth.missing_email", { defaultValue: "Missing email" }),
+        t("auth.enter_email", { defaultValue: "Please enter your email." })
+      );
+    }
+
+    if (!p) {
       return Alert.alert(
         t("auth.missing_info_title", { defaultValue: "Missing info" }),
         t("auth.missing_info_body", { defaultValue: "Enter email and password." })
       );
     }
 
+    if (p.length < 6) {
+      return Alert.alert(
+        t("auth.password_too_short", { defaultValue: "Password too short" }),
+        t("auth.password_min_6", { defaultValue: "Use at least 6 characters." })
+      );
+    }
+
     setLoading(true);
-    const { error } = await supabase.auth.signUp({ email: e, password: p });
+
+    const { data, error } = await supabase.auth.signUp({
+      email: e,
+      password: p,
+      options: {
+        data: {
+          full_name: n,
+        },
+      },
+    });
+
+    if (!error && data.session?.user?.id) {
+      const uid = data.session.user.id;
+
+      const { error: profileErr } = await supabase.from("profiles").upsert(
+        {
+          id: uid,
+          full_name: n,
+        } as any,
+        { onConflict: "id" }
+      );
+
+      if (profileErr) {
+        console.log("PROFILE UPSERT AFTER SIGNUP ERROR:", profileErr);
+      }
+    }
+
     setLoading(false);
 
     if (error) {
@@ -67,6 +116,7 @@ export default function SignUp() {
         defaultValue: "Check your email if confirmation is required, then sign in.",
       })
     );
+
     router.replace("/sign-in");
   };
 
@@ -109,6 +159,19 @@ export default function SignUp() {
             <View style={styles.card}>
               <TextInput
                 style={styles.input}
+                placeholder={t("profile.full_name_placeholder", { defaultValue: "Full name" })}
+                placeholderTextColor={COLORS.muted}
+                autoCapitalize="words"
+                autoCorrect={false}
+                textContentType="name"
+                autoComplete="name"
+                value={fullName}
+                onChangeText={setFullName}
+                returnKeyType="next"
+              />
+
+              <TextInput
+                style={styles.input}
                 placeholder={t("auth.email", { defaultValue: "Email" })}
                 placeholderTextColor={COLORS.muted}
                 autoCapitalize="none"
@@ -129,7 +192,7 @@ export default function SignUp() {
                   autoCapitalize="none"
                   autoCorrect={false}
                   textContentType="password"
-                  autoComplete="password"
+                  autoComplete="password-new"
                   secureTextEntry={!showPassword}
                   value={password}
                   onChangeText={setPassword}

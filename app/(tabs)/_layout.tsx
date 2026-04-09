@@ -1,4 +1,5 @@
 // app/(tabs)/_layout.tsx
+import "expo-dev-client";
 import { Tabs } from "expo-router";
 import React from "react";
 import SlideInMenu from "../../components/SlideInMenu";

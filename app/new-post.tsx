@@ -1,23 +1,25 @@
 // app/new-post.tsx
-import * as FileSystem from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Image, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { Alert, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { MediaThumbnail } from "../components/media/MediaThumbnail";
+import { applyMentionSuggestion, extractMentionHandles, getTrailingMentionQuery, resolveMentionHandlesToUserIds } from "../lib/mentions";
+import { sendPushEvent } from "../lib/push";
 import { supabase } from "../lib/supabase";
-
-function base64ToBytes(base64: string) {
-  const binary = globalThis.atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
+import { applyTagSuggestion, getTrailingTagQuery, pickSuggestedTags } from "../lib/tags";
+import { uploadMediaToSupabase } from "../lib/uploadMedia";
 
 type Picked = {
   uri: string;
-  base64?: string | null;
+  type?: "image" | "video";
+};
+
+type MentionProfile = {
+  id: string;
+  full_name: string | null;
 };
 
 const COLORS = {
@@ -35,11 +37,15 @@ const COLORS = {
 
 export default function NewPost() {
   const { t } = useTranslation();
+  const insets = useSafeAreaInsets();
 
   const [caption, setCaption] = useState("");
   const [visibility, setVisibility] = useState<"public" | "private">("public");
   const [photos, setPhotos] = useState<Picked[]>([]);
   const [loading, setLoading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [popularTags, setPopularTags] = useState<string[]>([]);
+  const [mentionSuggestions, setMentionSuggestions] = useState<MentionProfile[]>([]);
 
   const titleText = useMemo(() => t("new_post.title_default", { defaultValue: "New Post" }), [t]);
 
@@ -49,9 +55,75 @@ export default function NewPost() {
   );
 
   const primaryButtonText = useMemo(() => {
-    const posting = t("new_post.posting", { defaultValue: "Posting..." });
-    return loading ? posting : t("new_post.primary_ride", { defaultValue: "Post Ride" });
+    const posting = t("new_post.posting", { defaultValue: "Bezig…" });
+    return loading ? posting : t("new_post.primary_ride", { defaultValue: "Plaatsen" });
   }, [loading, t]);
+
+  const trailingTagQuery = useMemo(() => getTrailingTagQuery(caption), [caption]);
+  const trailingMentionQuery = useMemo(() => getTrailingMentionQuery(caption), [caption]);
+  const suggestedTags = useMemo(() => pickSuggestedTags(popularTags, trailingTagQuery, 8), [popularTags, trailingTagQuery]);
+  const showTagSuggestions = useMemo(() => /(?:^|\s)#[a-z0-9_]*$/i.test(caption), [caption]);
+  const showMentionSuggestions = useMemo(() => /(?:^|\s)@[a-z0-9_]*$/i.test(caption), [caption]);
+
+  useEffect(() => {
+    let alive = true;
+
+    (async () => {
+      const { data, error } = await supabase
+        .from("post_tags")
+        .select("tag")
+        .order("created_at", { ascending: false })
+        .limit(120);
+
+      if (!alive) return;
+      if (error) {
+        const msg = String(error.message ?? "").toLowerCase();
+        if (!msg.includes("post_tags") || !msg.includes("does not exist")) {
+          console.log("LOAD TAGS ERROR:", error);
+        }
+        setPopularTags(["bmw", "yamaha", "honda", "wheelie", "nightride", "touring"]);
+        return;
+      }
+
+      const tags = Array.from(new Set(((data ?? []) as any[]).map((row) => String(row.tag ?? "").toLowerCase()).filter(Boolean)));
+      setPopularTags(tags);
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    if (!showMentionSuggestions || !trailingMentionQuery) {
+      setMentionSuggestions([]);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, full_name")
+        .ilike("full_name", `%${trailingMentionQuery}%`)
+        .order("full_name", { ascending: true })
+        .limit(8);
+
+      if (!active) return;
+      if (error) {
+        setMentionSuggestions([]);
+        return;
+      }
+
+      setMentionSuggestions((data ?? []) as MentionProfile[]);
+    }, 120);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [showMentionSuggestions, trailingMentionQuery]);
 
   const pickPhotos = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -64,10 +136,9 @@ export default function NewPost() {
 
     const res = await ImagePicker.launchImageLibraryAsync({
       allowsMultipleSelection: true,
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ImagePicker.MediaTypeOptions.All,
       quality: 0.85,
       selectionLimit: 6,
-      base64: true,
     });
 
     if (res.canceled) return;
@@ -75,37 +146,17 @@ export default function NewPost() {
     setPhotos(
       res.assets.map((a) => ({
         uri: a.uri,
-        base64: a.base64 ?? null,
+        type: a.type === "video" ? "video" : "image",
       }))
     );
   };
 
-  const uploadImage = async (userId: string, photo: Picked) => {
-    let base64 = photo.base64;
-
-    if (!base64) {
-      base64 = await FileSystem.readAsStringAsync(photo.uri, { encoding: "base64" });
-    }
-
-    if (!base64) {
-      throw new Error(
-        t("new_post.read_image_failed", {
-          defaultValue: "Could not read image data (base64 missing). Try picking the photo again.",
-        })
-      );
-    }
-
-    const bytes = base64ToBytes(base64);
-    const filePath = `${userId}/${Date.now()}-${Math.random().toString(16).slice(2)}.jpg`;
-
-    const { error } = await supabase.storage.from("post-images").upload(filePath, bytes, {
-      contentType: "image/jpeg",
-      upsert: false,
-    });
-
-    if (error) throw error;
-
-    return supabase.storage.from("post-images").getPublicUrl(filePath).data.publicUrl;
+  const uploadMedia = async (userId: string, media: Picked, onProgress?: (p: number) => void) => {
+    const filePath = `${userId}/${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const ext = media.uri.split("?")[0].split("#")[0];
+    const dotExt = ext.includes(".") ? ext.slice(ext.lastIndexOf(".") + 1).toLowerCase() : (media.type === "video" ? "mp4" : "jpg");
+    const storagePath = `${filePath}.${dotExt}`;
+    return uploadMediaToSupabase(media.uri, "post-images", storagePath, media.type, onProgress);
   };
 
   const createPost = async () => {
@@ -135,7 +186,6 @@ export default function NewPost() {
       visibility,
     };
 
-    // Ride-only: always post_type = "ride"
     const { data: post1, error: postErr1 } = await supabase
       .from("posts")
       .insert({ ...baseInsert, post_type: "ride" })
@@ -143,7 +193,6 @@ export default function NewPost() {
       .single();
 
     if (postErr1) {
-      // fallback if post_type column doesn't exist
       const { data: post2, error: postErr2 } = await supabase.from("posts").insert(baseInsert).select("id").single();
 
       if (postErr2 || !post2) {
@@ -169,7 +218,14 @@ export default function NewPost() {
 
     try {
       for (let i = 0; i < photos.length; i++) {
-        const url = await uploadImage(userId, photos[i]);
+        const isVideo = photos[i].type === "video";
+        setUploadProgress(isVideo ? 0 : null);
+        const url = await uploadMedia(
+          userId,
+          photos[i],
+          isVideo ? (p) => setUploadProgress(p) : undefined
+        );
+        setUploadProgress(null);
 
         const { error: mediaErr } = await supabase.from("post_media").insert({
           post_id: postId,
@@ -181,9 +237,32 @@ export default function NewPost() {
       }
 
       setLoading(false);
+      setUploadProgress(null);
       router.replace("/");
+
+      // Fire and forget so UI can return to feed immediately.
+      void (async () => {
+        try {
+          const mentionHandles = extractMentionHandles(caption);
+          if (mentionHandles.length === 0) return;
+
+          const mentionUserByHandle = await resolveMentionHandlesToUserIds(mentionHandles);
+          const taggedUserIds = Array.from(new Set(Object.values(mentionUserByHandle))).filter((id) => id && id !== userId);
+
+          for (const taggedUserId of taggedUserIds) {
+            await sendPushEvent({
+              recipientUserId: taggedUserId,
+              type: "mention",
+              postId,
+            });
+          }
+        } catch {
+          // Keep upload UX fast; background mention push failures are non-blocking.
+        }
+      })();
     } catch (e: any) {
       setLoading(false);
+      setUploadProgress(null);
       Alert.alert(
         t("new_post.upload_failed_title", { defaultValue: "Upload failed" }),
         e?.message ?? t("new_post.unknown_error", { defaultValue: "Unknown error" })
@@ -198,10 +277,25 @@ export default function NewPost() {
   const captionPlaceholder = t("new_post.caption_placeholder_ride", { defaultValue: "Caption (optional)" });
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
-      <ScrollView style={{ flex: 1, backgroundColor: COLORS.bg }} contentContainerStyle={{ padding: 20, gap: 12 }}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right", "bottom"]}>
+      <ScrollView style={{ flex: 1, backgroundColor: COLORS.bg }} contentContainerStyle={{ padding: 20, gap: 12, paddingBottom: Math.max(insets.bottom + 36, 52) }}>
         <Text style={{ fontSize: 28, fontWeight: "900", color: COLORS.text }}>{titleText}</Text>
         <Text style={{ marginTop: -6, color: COLORS.muted, fontWeight: "700" }}>{subtitleText}</Text>
+
+        <View
+          style={{
+            borderRadius: 10,
+            borderWidth: 1,
+            borderColor: "rgba(124,255,178,0.55)",
+            backgroundColor: "rgba(124,255,178,0.12)",
+            paddingVertical: 8,
+            paddingHorizontal: 10,
+          }}
+        >
+          <Text style={{ color: "#D8FFE8", fontWeight: "800", fontSize: 12 }}>
+            {t("new_post.clip_upload_notice", { defaultValue: "If you upload a video here, it will appear in Clips." })}
+          </Text>
+        </View>
 
         <View style={{ flexDirection: "row", gap: 10, marginTop: 6 }}>
           <Pressable
@@ -256,6 +350,64 @@ export default function NewPost() {
           multiline
         />
 
+        {showTagSuggestions && suggestedTags.length > 0 ? (
+          <View style={{ marginTop: -2 }}>
+            <Text style={{ color: COLORS.muted, fontSize: 12, fontWeight: "800", marginBottom: 8 }}>
+              {t("new_post.tags_suggested", { defaultValue: "Suggested tags" })}
+            </Text>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+              {suggestedTags.map((tag) => (
+                <Pressable
+                  key={tag}
+                  disabled={loading}
+                  onPress={() => setCaption((prev) => applyTagSuggestion(prev, tag))}
+                  style={{
+                    paddingVertical: 7,
+                    paddingHorizontal: 10,
+                    borderRadius: 999,
+                    backgroundColor: COLORS.chip,
+                    borderWidth: 1,
+                    borderColor: COLORS.border,
+                  }}
+                >
+                  <Text style={{ color: COLORS.text, fontWeight: "900" }}>#{tag}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+        ) : null}
+
+        {showMentionSuggestions && mentionSuggestions.length > 0 ? (
+          <View style={{ marginTop: 2 }}>
+            <Text style={{ color: COLORS.muted, fontSize: 12, fontWeight: "800", marginBottom: 8 }}>
+              {t("new_post.mentions_suggested", { defaultValue: "Suggested riders" })}
+            </Text>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+              {mentionSuggestions.map((profile) => {
+                const label = String(profile.full_name ?? "").trim();
+                if (!label) return null;
+                return (
+                  <Pressable
+                    key={profile.id}
+                    disabled={loading}
+                    onPress={() => setCaption((prev) => applyMentionSuggestion(prev, label))}
+                    style={{
+                      paddingVertical: 7,
+                      paddingHorizontal: 10,
+                      borderRadius: 999,
+                      backgroundColor: COLORS.chip,
+                      borderWidth: 1,
+                      borderColor: COLORS.border,
+                    }}
+                  >
+                    <Text style={{ color: COLORS.text, fontWeight: "900" }}>@{label.replace(/[^a-zA-Z0-9_]/g, "").toLowerCase()}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        ) : null}
+
         <Pressable
           onPress={pickPhotos}
           disabled={loading}
@@ -267,7 +419,7 @@ export default function NewPost() {
           }}
         >
           <Text style={{ color: COLORS.buttonText, fontWeight: "900" }}>
-            {t("new_post.pick_photos", { defaultValue: "Pick Photos (max 6)" })}
+            {t("new_post.pick_photos", { defaultValue: "Foto's / Video uploaden (max 6)" })}
           </Text>
         </Pressable>
 
@@ -275,17 +427,7 @@ export default function NewPost() {
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
             {photos.map((p, i) => (
               <View key={i} style={{ position: "relative" }}>
-                <Image
-                  source={{ uri: p.uri }}
-                  style={{
-                    width: 110,
-                    height: 110,
-                    borderRadius: 14,
-                    borderWidth: 1,
-                    borderColor: COLORS.border,
-                    backgroundColor: "#0F0F16",
-                  }}
-                />
+                <MediaThumbnail url={p.uri} width={110} height={110} borderRadius={14} resizeMode="cover" />
                 <Pressable
                   onPress={() => removePhoto(i)}
                   disabled={loading}
@@ -319,7 +461,7 @@ export default function NewPost() {
             <Text style={{ color: COLORS.muted }}>
               {t("new_post.no_photos_prefix", { defaultValue: "No photos selected yet. Tap" })}{" "}
               <Text style={{ color: COLORS.text, fontWeight: "900" }}>
-                {t("new_post.no_photos_pick_photos", { defaultValue: "Pick Photos" })}
+                {t("new_post.no_photos_pick_photos", { defaultValue: "Foto's / Video uploaden" })}
               </Text>
               .
             </Text>
@@ -339,6 +481,29 @@ export default function NewPost() {
         >
           <Text style={{ color: COLORS.buttonText, fontWeight: "900" }}>{primaryButtonText}</Text>
         </Pressable>
+
+        {uploadProgress !== null && (
+          <View style={{ marginTop: 10, gap: 6 }}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+              <Text style={{ color: COLORS.muted, fontSize: 12, fontWeight: "700" }}>
+                {t("new_post.uploading_video", { defaultValue: "Video uploaden…" })}
+              </Text>
+              <Text style={{ color: COLORS.text, fontSize: 12, fontWeight: "900" }}>
+                {Math.round(uploadProgress * 100)}%
+              </Text>
+            </View>
+            <View style={{ height: 6, borderRadius: 999, backgroundColor: COLORS.card, overflow: "hidden" }}>
+              <View
+                style={{
+                  height: "100%",
+                  borderRadius: 999,
+                  backgroundColor: COLORS.button,
+                  width: `${Math.round(uploadProgress * 100)}%`,
+                }}
+              />
+            </View>
+          </View>
+        )}
 
         <Pressable
           onPress={() => router.back()}

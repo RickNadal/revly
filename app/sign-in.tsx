@@ -3,19 +3,19 @@ import { Link, router } from "expo-router";
 import React, { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Alert,
-  Image,
-  Keyboard,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
+    Alert,
+    Image,
+    Keyboard,
+    KeyboardAvoidingView,
+    Platform,
+    Pressable,
+    StyleSheet,
+    Text,
+    TextInput,
+    View,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { supabase, SUPABASE_DEBUG } from "../lib/supabase";
+import { signOutSafely, supabase } from "../lib/supabase";
 
 const COLORS = {
   bg: "#0B0B0F",
@@ -31,12 +31,6 @@ const COLORS = {
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
-}
-
-function maskKey(value: string) {
-  if (!value) return "MISSING";
-  if (value.length <= 12) return value;
-  return `${value.slice(0, 12)}...${value.slice(-6)}`;
 }
 
 export default function SignIn() {
@@ -59,25 +53,6 @@ export default function SignIn() {
       hideSub.remove();
     };
   }, []);
-
-  const onShowDebug = async () => {
-    try {
-      const { data, error } = await supabase.auth.getSession();
-
-      Alert.alert(
-        "SUPABASE DEBUG",
-        [
-          `URL: ${SUPABASE_DEBUG.url}`,
-          `HAS KEY: ${SUPABASE_DEBUG.hasAnonKey ? "YES" : "NO"}`,
-          `KEY: ${maskKey(process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? "")}`,
-          `SESSION: ${data?.session ? "YES" : "NO"}`,
-          error ? `SESSION ERROR: ${error.message}` : "SESSION ERROR: none",
-        ].join("\n\n")
-      );
-    } catch (e: any) {
-      Alert.alert("SUPABASE DEBUG", `Crash: ${e?.message ?? String(e)}`);
-    }
-  };
 
   const onSignIn = async () => {
     const e = email.trim();
@@ -103,12 +78,7 @@ export default function SignIn() {
     if (error) {
       Alert.alert(
         t("auth.sign_in_failed_title", { defaultValue: "Sign in failed" }),
-        [
-          error.message,
-          "",
-          `URL: ${SUPABASE_DEBUG.url}`,
-          `KEY: ${maskKey(process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? "")}`,
-        ].join("\n")
+        error.message
       );
       return;
     }
@@ -119,15 +89,30 @@ export default function SignIn() {
 
       if (session) {
         const userId = session.user.id;
+        const metadataName = String(session.user.user_metadata?.full_name ?? "").trim();
+
+        if (metadataName) {
+          const { error: nameUpsertErr } = await supabase.from("profiles").upsert(
+            {
+              id: userId,
+              full_name: metadataName,
+            } as any,
+            { onConflict: "id" }
+          );
+
+          if (nameUpsertErr) {
+            console.log("PROFILE UPSERT AFTER SIGNIN ERROR:", nameUpsertErr);
+          }
+        }
 
         const { data: prof, error: profErr } = await supabase
           .from("profiles")
           .select("is_banned")
           .eq("id", userId)
-          .single();
+          .maybeSingle();
 
         if (!profErr && (prof as any)?.is_banned) {
-          await supabase.auth.signOut();
+          await signOutSafely();
           Alert.alert("Account banned", "This account has been banned.");
           return;
         }
@@ -161,15 +146,7 @@ export default function SignIn() {
     setResetLoading(false);
 
     if (error) {
-      Alert.alert(
-        "Reset failed",
-        [
-          error.message,
-          "",
-          `URL: ${SUPABASE_DEBUG.url}`,
-          `KEY: ${maskKey(process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? "")}`,
-        ].join("\n")
-      );
+      Alert.alert("Reset failed", error.message);
       return;
     }
 
@@ -282,15 +259,6 @@ export default function SignIn() {
                 {loading
                   ? t("common.loading_dots", { defaultValue: "..." })
                   : t("auth.sign_in_button", { defaultValue: "Sign In" })}
-              </Text>
-            </Pressable>
-
-            <Pressable
-              style={[styles.button, { backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border }]}
-              onPress={onShowDebug}
-            >
-              <Text style={{ color: COLORS.text, fontSize: 16, fontWeight: "900" }}>
-                Show Supabase Debug
               </Text>
             </Pressable>
 

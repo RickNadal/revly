@@ -1,21 +1,14 @@
 // app/sell/create.tsx
-import * as FileSystem from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, Image, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { supabase } from "../../lib/supabase";
+import { uploadMediaToSupabase } from "../../lib/uploadMedia";
 
-function base64ToBytes(base64: string) {
-  const binary = globalThis.atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
-type Picked = { uri: string; base64?: string | null };
+type Picked = { uri: string; type?: "image" | "video" };
 
 type Condition = "new" | "like_new" | "good" | "fair" | "parts";
 type Category = "bike" | "parts" | "gear" | "other";
@@ -43,6 +36,25 @@ function isDuplicateKeyError(err: any) {
 
 export default function CreateListingScreen() {
   const { t } = useTranslation();
+
+  const [isPremium, setIsPremium] = useState(false);
+  const [checkingPremium, setCheckingPremium] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const uid = sessionData.session?.user.id;
+        if (!uid) { setCheckingPremium(false); return; }
+        const { data } = await supabase.from("profiles").select("is_premium").eq("id", uid).single();
+        setIsPremium(!!(data as any)?.is_premium);
+      } catch {
+        setIsPremium(false);
+      } finally {
+        setCheckingPremium(false);
+      }
+    })();
+  }, []);
 
   const [title, setTitle] = useState("");
   const [priceText, setPriceText] = useState("");
@@ -73,7 +85,7 @@ export default function CreateListingScreen() {
         borderRadius: 999,
         backgroundColor: active ? COLORS.button : COLORS.chip,
         borderWidth: 1,
-        borderColor: COLORS.border,
+        borderColor: active ? "#7CFFB2" : COLORS.border,
       }}
     >
       <Text style={{ color: active ? COLORS.buttonText : COLORS.text, fontWeight: "900" }}>{label}</Text>
@@ -92,10 +104,9 @@ export default function CreateListingScreen() {
 
     const res = await ImagePicker.launchImageLibraryAsync({
       allowsMultipleSelection: true,
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ImagePicker.MediaTypeOptions.All,
       quality: 0.85,
       selectionLimit: 8,
-      base64: true,
     });
 
     if (res.canceled) return;
@@ -103,30 +114,16 @@ export default function CreateListingScreen() {
     setPhotos(
       res.assets.map((a) => ({
         uri: a.uri,
-        base64: a.base64 ?? null,
+        type: a.type === "video" ? "video" : "image",
       }))
     );
   };
 
   const uploadImage = async (userId: string, photo: Picked) => {
-    let base64 = photo.base64;
-
-    if (!base64) {
-      base64 = await FileSystem.readAsStringAsync(photo.uri, { encoding: "base64" });
-    }
-    if (!base64) throw new Error(t("sell_create.read_image_failed", { defaultValue: "Could not read image data. Try picking again." }));
-
-    const bytes = base64ToBytes(base64);
-    const filePath = `listings/${userId}/${Date.now()}-${Math.random().toString(16).slice(2)}.jpg`;
-
-    const { error } = await supabase.storage.from("post-images").upload(filePath, bytes, {
-      contentType: "image/jpeg",
-      upsert: false,
-    });
-
-    if (error) throw error;
-
-    return supabase.storage.from("post-images").getPublicUrl(filePath).data.publicUrl;
+    const clean = String(photo.uri).split("?")[0].split("#")[0];
+    const dotExt = clean.includes(".") ? clean.slice(clean.lastIndexOf(".") + 1).toLowerCase() : (photo.type === "video" ? "mp4" : "jpg");
+    const storagePath = `listings/${userId}/${Date.now()}-${Math.random().toString(16).slice(2)}.${dotExt}`;
+    return uploadMediaToSupabase(photo.uri, "post-images", storagePath, photo.type);
   };
 
   const createListing = async () => {
@@ -241,6 +238,51 @@ export default function CreateListingScreen() {
   const removePhoto = (index: number) => {
     setPhotos((prev) => prev.filter((_, i) => i !== index));
   };
+
+  if (checkingPremium) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg, alignItems: "center", justifyContent: "center" }}>
+        <Text style={{ color: COLORS.muted, fontWeight: "700" }}>{t("common.loading", { defaultValue: "Loading…" })}</Text>
+      </SafeAreaView>
+    );
+  }
+
+  if (!isPremium) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+        <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 32, gap: 16 }}>
+          <Text style={{ fontSize: 48 }}>🔒</Text>
+          <Text style={{ fontSize: 24, fontWeight: "900", color: COLORS.text, textAlign: "center" }}>
+            {t("sell_create.gate_title", { defaultValue: "Premium members only" })}
+          </Text>
+          <Text style={{ color: COLORS.muted, fontWeight: "700", textAlign: "center", lineHeight: 22 }}>
+            {t("sell_create.gate_body", {
+              defaultValue: "Listing items in the Marketplace is a Premium feature. Upgrade to start selling.",
+            })}
+          </Text>
+          <Pressable
+            onPress={() => router.push("/premium")}
+            style={{
+              marginTop: 8,
+              backgroundColor: COLORS.button,
+              paddingVertical: 14,
+              paddingHorizontal: 32,
+              borderRadius: 999,
+            }}
+          >
+            <Text style={{ color: COLORS.buttonText, fontWeight: "900", fontSize: 16 }}>
+              {t("sell_create.gate_cta", { defaultValue: "Go Premium →" })}
+            </Text>
+          </Pressable>
+          <Pressable onPress={() => router.back()}>
+            <Text style={{ color: COLORS.muted, fontWeight: "700", marginTop: 4 }}>
+              {t("sell_create.gate_back", { defaultValue: "Go back" })}
+            </Text>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
@@ -380,7 +422,7 @@ export default function CreateListingScreen() {
           }}
         >
           <Text style={{ color: COLORS.buttonText, fontWeight: "900" }}>
-            {t("sell_create.pick_photos", { defaultValue: "Pick Photos (max 8)" })}
+            {t("sell_create.pick_photos", { defaultValue: "Pick Photos / Videos (max 8)" })}
           </Text>
         </Pressable>
 

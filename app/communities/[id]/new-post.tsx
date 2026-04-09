@@ -1,20 +1,33 @@
 // app/communities/[id]/new-post.tsx
-import * as FileSystem from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import { router, useLocalSearchParams } from "expo-router";
 import React, { useState } from "react";
-import { Alert, Image, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { Alert, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { MediaThumbnail } from "../../../components/media/MediaThumbnail";
 import { supabase } from "../../../lib/supabase";
+import { uploadMediaToSupabase } from "../../../lib/uploadMedia";
 
-function base64ToBytes(base64: string) {
-  const binary = globalThis.atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
+type Picked = { uri: string; type?: "image" | "video" };
+
+function extFromUri(uri: string, type?: "image" | "video") {
+  const clean = String(uri).split("?")[0].split("#")[0];
+  const fromUri = clean.includes(".") ? clean.slice(clean.lastIndexOf(".") + 1).toLowerCase() : "";
+  if (fromUri) return fromUri;
+  return type === "video" ? "mp4" : "jpg";
 }
 
-type Picked = { uri: string; base64?: string | null };
+function mimeFromExt(ext: string, type?: "image" | "video") {
+  const e = ext.toLowerCase();
+  if (type === "video" || ["mp4", "mov", "m4v", "webm"].includes(e)) {
+    if (e === "mov") return "video/quicktime";
+    if (e === "webm") return "video/webm";
+    return "video/mp4";
+  }
+  if (e === "png") return "image/png";
+  if (e === "webp") return "image/webp";
+  return "image/jpeg";
+}
 
 const COLORS = {
   bg: "#0B0B0F",
@@ -39,14 +52,13 @@ export default function CommunityNewPost() {
 
   const pickPhotos = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) return Alert.alert("Permission needed", "Allow photo access.");
+    if (!perm.granted) return Alert.alert("Permission needed", "Allow media access.");
 
     const res = await ImagePicker.launchImageLibraryAsync({
       allowsMultipleSelection: true,
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ImagePicker.MediaTypeOptions.All,
       quality: 0.85,
       selectionLimit: 8,
-      base64: true,
     });
 
     if (res.canceled) return;
@@ -54,30 +66,16 @@ export default function CommunityNewPost() {
     setPhotos(
       res.assets.map((a) => ({
         uri: a.uri,
-        base64: a.base64 ?? null,
+        type: a.type === "video" ? "video" : "image",
       }))
     );
   };
 
-  const uploadImage = async (userId: string, photo: Picked) => {
-    let base64 = photo.base64;
-
-    if (!base64) {
-      base64 = await FileSystem.readAsStringAsync(photo.uri, { encoding: "base64" });
-    }
-    if (!base64) throw new Error("Could not read image data. Try picking again.");
-
-    const bytes = base64ToBytes(base64);
-    const filePath = `groups/${groupId}/${userId}/${Date.now()}-${Math.random().toString(16).slice(2)}.jpg`;
-
-    const { error } = await supabase.storage.from("post-images").upload(filePath, bytes, {
-      contentType: "image/jpeg",
-      upsert: false,
-    });
-
-    if (error) throw error;
-
-    return supabase.storage.from("post-images").getPublicUrl(filePath).data.publicUrl;
+  const uploadMedia = async (userId: string, media: Picked) => {
+    const clean = String(media.uri).split("?")[0].split("#")[0];
+    const dotExt = clean.includes(".") ? clean.slice(clean.lastIndexOf(".") + 1).toLowerCase() : (media.type === "video" ? "mp4" : "jpg");
+    const storagePath = `groups/${groupId}/${userId}/${Date.now()}-${Math.random().toString(16).slice(2)}.${dotExt}`;
+    return uploadMediaToSupabase(media.uri, "post-images", storagePath, media.type);
   };
 
   const create = async () => {
@@ -128,7 +126,7 @@ export default function CommunityNewPost() {
 
     try {
       for (let i = 0; i < photos.length; i++) {
-        const url = await uploadImage(uid, photos[i]);
+        const url = await uploadMedia(uid, photos[i]);
         const { error: mErr } = await supabase.from("group_post_media").insert({
           post_id: post.id,
           url,
@@ -180,23 +178,18 @@ export default function CommunityNewPost() {
             alignItems: "center",
           }}
         >
-          <Text style={{ color: COLORS.buttonText, fontWeight: "900" }}>Pick Photos (max 8)</Text>
+          <Text style={{ color: COLORS.buttonText, fontWeight: "900" }}>Pick Photos / Videos (max 8)</Text>
         </Pressable>
 
         {photos.length ? (
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
             {photos.map((p, i) => (
               <View key={i} style={{ position: "relative" }}>
-                <Image
-                  source={{ uri: p.uri }}
-                  style={{
-                    width: 110,
-                    height: 110,
-                    borderRadius: 14,
-                    borderWidth: 1,
-                    borderColor: COLORS.border,
-                    backgroundColor: "#0F0F16",
-                  }}
+                <MediaThumbnail
+                  url={p.uri}
+                  width={110}
+                  height={110}
+                  borderRadius={14}
                 />
                 <Pressable
                   onPress={() => removePhoto(i)}

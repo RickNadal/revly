@@ -3,7 +3,7 @@ import { router, useFocusEffect } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, FlatList, Pressable, RefreshControl, Text, TextInput, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { supabase } from "../../lib/supabase";
 
 type GroupRow = {
@@ -29,6 +29,7 @@ const COLORS = {
 
 export default function CommunitiesTabScreen() {
   const { t } = useTranslation();
+  const insets = useSafeAreaInsets();
 
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<GroupRow[]>([]);
@@ -178,7 +179,7 @@ export default function CommunitiesTabScreen() {
   };
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right", "bottom"]}>
       <View style={{ padding: 16, paddingBottom: 8 }}>
         <Text style={{ color: COLORS.text, fontSize: 24, fontWeight: "900" }}>
           {t("communities.title", { defaultValue: "Communities" })}
@@ -219,23 +220,6 @@ export default function CommunitiesTabScreen() {
               {t("communities.create_button", { defaultValue: "Create community" })}
             </Text>
           </Pressable>
-
-          <Pressable
-            onPress={() => router.back()}
-            style={{
-              backgroundColor: COLORS.chip,
-              borderRadius: 14,
-              paddingVertical: 12,
-              paddingHorizontal: 14,
-              alignItems: "center",
-              borderWidth: 1,
-              borderColor: COLORS.border,
-            }}
-          >
-            <Text style={{ color: COLORS.text, fontWeight: "900" }}>
-              {t("communities.back", { defaultValue: "Back" })}
-            </Text>
-          </Pressable>
         </View>
 
         <Text style={{ color: "rgba(255,255,255,0.45)", marginTop: 10, fontWeight: "800", fontSize: 12 }}>
@@ -248,7 +232,7 @@ export default function CommunitiesTabScreen() {
       <FlatList
         data={filtered}
         keyExtractor={(x) => x.id}
-        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 30 }}
+        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: Math.max(insets.bottom + 30, 46) }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         ListEmptyComponent={
           <View style={{ paddingTop: 18 }}>

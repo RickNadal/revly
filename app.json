@@ -1,16 +1,27 @@
 {
   "expo": {
-    "name": "Oranga TEST BUILD",
+    "name": "Oranga",
     "slug": "oranga",
     "scheme": "oranga",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
-    "assetBundlePatterns": ["**/*"],
-    "plugins": ["expo-router"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "plugins": [
+      "expo-router",
+      "expo-notifications",
+      "@react-native-community/datetimepicker",
+      "expo-localization"
+    ],
     "sdkVersion": "54.0.0",
-    "platforms": ["ios", "android", "web"],
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
     "splash": {
       "image": "./assets/splash.png",
       "resizeMode": "contain",
@@ -41,11 +52,15 @@
               "scheme": "oranga"
             }
           ],
-          "category": ["BROWSABLE", "DEFAULT"]
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
         }
       ]
     },
     "extra": {
+      "androidMapsEnabled": true,
       "router": {
         "origin": "http://localhost"
       },

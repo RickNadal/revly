@@ -42,6 +42,7 @@ export default function FeedbackScreen() {
     if (!msg) return Alert.alert("Missing feedback", "Please write your feedback message.");
 
     setSending(true);
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
     try {
       const { data: sessionData } = await supabase.auth.getSession();
@@ -62,8 +63,17 @@ export default function FeedbackScreen() {
         platform: Platform.OS,
       };
 
-      const { error } = await supabase.from("feedback").insert(payload);
-      if (error) throw new Error(error.message);
+      await Promise.race([
+        supabase.from("feedback").insert(payload).then(({ error }) => {
+          if (error) throw new Error(error.message);
+        }),
+        new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(
+            () => reject(new Error("Took too long — check your connection and try again.")),
+            15_000,
+          );
+        }),
+      ]);
 
       setMessage("");
       setRating(0);
@@ -72,6 +82,7 @@ export default function FeedbackScreen() {
     } catch (e: any) {
       Alert.alert("Send failed", e?.message ?? "Unknown error");
     } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       setSending(false);
     }
   };
@@ -87,7 +98,7 @@ export default function FeedbackScreen() {
           borderRadius: 999,
           backgroundColor: active ? COLORS.button : COLORS.chip,
           borderWidth: 1,
-          borderColor: COLORS.border,
+          borderColor: active ? "#7CFFB2" : COLORS.border,
         }}
       >
         <Text style={{ color: active ? COLORS.buttonText : COLORS.text, fontWeight: "900" }}>

@@ -1,17 +1,45 @@
 {
   "cli": { "version": ">= 10.0.0", "appVersionSource": "remote" },
   "build": {
+    "development": {
+      "distribution": "internal",
+      "developmentClient": true,
+      "channel": "development",
+      "env": { "APP_VARIANT": "development" },
+      "android": { "buildType": "apk", "credentialsSource": "local" },
+      "ios": { "simulator": false }
+    },
     "preview": {
       "distribution": "internal",
-      "android": { "buildType": "apk" },
+      "channel": "preview",
+      "android": { "buildType": "apk", "credentialsSource": "local" },
       "ios": { "simulator": false }
     },
     "production": {
+      "channel": "production",
+      "android": { "credentialsSource": "remote" },
       "autoIncrement": true
     },
     "play": {
-      "android": { "buildType": "app-bundle" },
+      "channel": "production",
+      "android": { "buildType": "app-bundle", "credentialsSource": "remote" },
       "autoIncrement": true
+    }
+  },
+  "submit": {
+    "production": {
+      "ios": {},
+      "android": {
+        "track": "production",
+        "serviceAccountKeyPath": "./eas jason file/oranga-social-074be63e93af.json"
+      }
+    },
+    "play": {
+      "android": {
+        "track": "internal",
+        "releaseStatus": "draft",
+        "serviceAccountKeyPath": "./eas jason file/oranga-social-074be63e93af.json"
+      }
     }
   }
 }

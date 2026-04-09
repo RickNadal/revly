@@ -26,9 +26,27 @@ export function injectSponsoredRows<TPost>(opts: InjectOpts<TPost>): FeedRow<TPo
   const { posts, getPostId, placement, everyN, campaigns, hiddenAdIds, maxAdsPerPage = Infinity, rotationSeed } = opts;
 
   const rows: FeedRow<TPost>[] = [];
-  if (!posts.length) return rows;
-
   const visibleCampaigns = campaigns.filter((c) => !hiddenAdIds.has(c.id));
+
+  // Empty feed fallback: still allow one ad to render when campaigns are available.
+  if (!posts.length) {
+    if (!visibleCampaigns.length || maxAdsPerPage <= 0) return rows;
+
+    const seed = hashStringToSeed(`${rotationSeed}:${placement}:empty`);
+    const u = seededUnitFloat(seed);
+    const picked = weightedPick(visibleCampaigns, u);
+    if (!picked) return rows;
+
+    rows.push({
+      type: "ad",
+      key: `ad:${picked.id}:0`,
+      ad: picked,
+      placement,
+    });
+
+    return rows;
+  }
+
   let adCount = 0;
 
   for (let i = 0; i < posts.length; i++) {
@@ -57,6 +75,23 @@ export function injectSponsoredRows<TPost>(opts: InjectOpts<TPost>): FeedRow<TPo
     });
 
     adCount += 1;
+  }
+
+  // If feed length is below insertion interval, make sure at least one ad can still surface.
+  if (adCount === 0 && visibleCampaigns.length > 0 && maxAdsPerPage > 0) {
+    const slot = 0;
+    const seed = hashStringToSeed(`${rotationSeed}:${placement}:fallback`);
+    const u = seededUnitFloat(seed);
+    const picked = weightedPick(visibleCampaigns, u);
+
+    if (picked) {
+      rows.push({
+        type: "ad",
+        key: `ad:${picked.id}:${slot}`,
+        ad: picked,
+        placement,
+      });
+    }
   }
 
   return rows;

@@ -1,23 +1,27 @@
 // app/post.tsx
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
-  Alert,
-  Dimensions,
-  FlatList,
-  Image,
-  Keyboard,
-  Modal,
-  NativeScrollEvent,
-  NativeSyntheticEvent,
-  Platform,
-  Pressable,
-  Text,
-  TextInput,
-  View,
+    Alert,
+    Dimensions,
+    FlatList,
+    Keyboard,
+    Modal,
+    NativeScrollEvent,
+    NativeSyntheticEvent,
+    Platform,
+    Pressable,
+    Text,
+    TextInput,
+    View
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { MediaThumbnail } from "../components/media/MediaThumbnail";
+import MentionText from "../components/MentionText";
+import { sendPushEvent } from "../lib/push";
 import { supabase } from "../lib/supabase";
+import { timeAgo } from "../lib/time";
 
 type ProfileRole = "user" | "moderator" | "admin";
 
@@ -26,8 +30,21 @@ type CommentRow = {
   content: string;
   created_at: string;
   user_id: string;
+  parent_id: string | null;
   author_name: string;
 };
+
+type ReactionKind = "like" | "love" | "fire" | "laugh" | "wow";
+
+type ReactionCountMap = Record<ReactionKind, number>;
+
+const REACTION_OPTIONS: Array<{ key: ReactionKind; emoji: string }> = [
+  { key: "like", emoji: "👍" },
+  { key: "love", emoji: "🔥" },
+  { key: "fire", emoji: "🔥" },
+  { key: "laugh", emoji: "😂" },
+  { key: "wow", emoji: "😮" },
+];
 
 type PostMediaRow = {
   url: string;
@@ -94,6 +111,11 @@ function formatSupabaseError(err: any) {
   }
 
   return parts.join("\n");
+}
+
+function isUuid(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim());
 }
 
 function openViewer(opts: {
@@ -211,7 +233,7 @@ function PostCarousel({
               }
               style={{ width: CAROUSEL_W, height: CAROUSEL_H }}
             >
-              <Image source={{ uri: item }} style={{ width: "100%", height: "100%" }} resizeMode="cover" />
+              <MediaThumbnail url={item} width="100%" height="100%" resizeMode="cover" />
             </Pressable>
           )}
         />
@@ -302,6 +324,7 @@ function ActionRow({
 }
 
 export default function PostScreen() {
+  const { t } = useTranslation();
   const params = useLocalSearchParams<{ id: string }>();
   const postId = params.id;
 
@@ -315,6 +338,11 @@ export default function PostScreen() {
 
   const [meId, setMeId] = useState<string | null>(null);
   const [myRole, setMyRole] = useState<ProfileRole>("user");
+  const [commentReactionsEnabled, setCommentReactionsEnabled] = useState(true);
+  const [commentReactionCounts, setCommentReactionCounts] = useState<Record<string, ReactionCountMap>>({});
+  const [myCommentReactions, setMyCommentReactions] = useState<Record<string, ReactionKind[]>>({});
+  const [reactionPickerCommentId, setReactionPickerCommentId] = useState<string | null>(null);
+  const [replyingTo, setReplyingTo] = useState<{ id: string; author_name: string } | null>(null);
 
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [carouselIndexByPost, setCarouselIndexByPost] = useState<Record<string, number>>({});
@@ -355,9 +383,10 @@ export default function PostScreen() {
     }
   };
 
-  const load = async () => {
+  const load = async (opts?: { silent?: boolean }) => {
+    const silent = !!opts?.silent;
     if (!postId) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
 
     const { data: sessionData } = await supabase.auth.getSession();
     const session = sessionData.session;
@@ -377,7 +406,7 @@ export default function PostScreen() {
       .single();
 
     if (pErr) {
-      setLoading(false);
+      if (!silent) setLoading(false);
       Alert.alert("Post load failed", formatSupabaseError(pErr));
       return;
     }
@@ -386,16 +415,20 @@ export default function PostScreen() {
       (a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0)
     );
 
-    const { data: author, error: authorErr } = await supabase
-      .from("profiles")
-      .select("full_name")
-      .eq("id", p.user_id)
-      .single();
+    let author: { full_name: string | null } | null = null;
 
-    if (authorErr) {
-      setLoading(false);
-      Alert.alert("Author load failed", formatSupabaseError(authorErr));
-      return;
+    if (isUuid(p.user_id)) {
+      const { data: authorData, error: authorErr } = await supabase
+        .from("profiles")
+        .select("full_name")
+        .eq("id", p.user_id)
+        .maybeSingle();
+
+      if (authorErr) {
+        console.log("AUTHOR LOAD FAILED:", formatSupabaseError(authorErr));
+      } else {
+        author = authorData as { full_name: string | null } | null;
+      }
     }
 
     const postObj: PostRow = {
@@ -406,19 +439,19 @@ export default function PostScreen() {
 
     const { data: c, error: cErr } = await supabase
       .from("comments")
-      .select("id, content, created_at, user_id")
+      .select("id, content, created_at, user_id, parent_id")
       .eq("post_id", postId)
       .order("created_at", { ascending: true });
 
     if (cErr) {
       setPost(postObj);
       setComments([]);
-      setLoading(false);
+      if (!silent) setLoading(false);
       Alert.alert("Comments load failed", formatSupabaseError(cErr));
       return;
     }
 
-    const userIds = Array.from(new Set((c ?? []).map((x: any) => x.user_id)));
+    const userIds = Array.from(new Set((c ?? []).map((x: any) => String(x.user_id ?? "").trim()).filter(isUuid)));
     const nameById = new Map<string, string>();
 
     if (userIds.length > 0) {
@@ -426,7 +459,7 @@ export default function PostScreen() {
       if (p2Err) {
         setPost(postObj);
         setComments((c ?? []).map((row: any) => ({ ...row, author_name: "Rider" })));
-        setLoading(false);
+        if (!silent) setLoading(false);
         Alert.alert("Profiles load failed", formatSupabaseError(p2Err));
         return;
       }
@@ -438,12 +471,121 @@ export default function PostScreen() {
 
     const commentList: CommentRow[] = (c ?? []).map((row: any) => ({
       ...row,
+      parent_id: row.parent_id ?? null,
       author_name: nameById.get(row.user_id) ?? "Rider",
     }));
 
+    const commentIds = commentList.map((row) => row.id);
+    const nextCounts: Record<string, ReactionCountMap> = {};
+    const nextMine: Record<string, ReactionKind[]> = {};
+
+    if (commentReactionsEnabled && commentIds.length > 0) {
+      const { data: reactionRows, error: reactionsErr } = await supabase
+        .from("comment_reactions")
+        .select("comment_id, user_id, reaction")
+        .in("comment_id", commentIds);
+
+      if (reactionsErr) {
+        const msg = String(reactionsErr.message ?? "").toLowerCase();
+        if (msg.includes("comment_reactions") && msg.includes("does not exist")) {
+          setCommentReactionsEnabled(false);
+        }
+      } else {
+        for (const rr of (reactionRows ?? []) as any[]) {
+          const cid = String(rr.comment_id ?? "");
+          const uid = String(rr.user_id ?? "");
+          const reaction = String(rr.reaction ?? "") as ReactionKind;
+          if (!cid || !REACTION_OPTIONS.some((x) => x.key === reaction)) continue;
+
+          if (!nextCounts[cid]) {
+            nextCounts[cid] = { like: 0, love: 0, fire: 0, laugh: 0, wow: 0 };
+          }
+          nextCounts[cid][reaction] += 1;
+
+          if (uid === me) {
+            if (!nextMine[cid]) nextMine[cid] = [];
+            if (!nextMine[cid].includes(reaction)) nextMine[cid].push(reaction);
+          }
+        }
+      }
+    }
+
     setPost(postObj);
     setComments(commentList);
-    setLoading(false);
+    setCommentReactionCounts(nextCounts);
+    setMyCommentReactions(nextMine);
+    if (!silent) setLoading(false);
+  };
+
+  const toggleCommentReaction = async (commentId: string, reaction: ReactionKind) => {
+    const uid = meId;
+    if (!uid) {
+      const { data } = await supabase.auth.getSession();
+      if (!data.session) {
+        router.replace("/sign-in");
+        return;
+      }
+      setMeId(data.session.user.id);
+    }
+
+    const actualUid = uid ?? (await supabase.auth.getSession()).data.session?.user.id;
+    if (!actualUid) return;
+
+    const wasActive = (myCommentReactions[commentId] ?? []).includes(reaction);
+
+    setMyCommentReactions((prev) => {
+      const current = prev[commentId] ?? [];
+      const next = wasActive ? current.filter((x) => x !== reaction) : [...current, reaction];
+      return { ...prev, [commentId]: next };
+    });
+
+    setCommentReactionCounts((prev) => {
+      const base = prev[commentId] ?? { like: 0, love: 0, fire: 0, laugh: 0, wow: 0 };
+      const delta = wasActive ? -1 : 1;
+      return {
+        ...prev,
+        [commentId]: {
+          ...base,
+          [reaction]: Math.max(0, (base[reaction] ?? 0) + delta),
+        },
+      };
+    });
+
+    try {
+      if (wasActive) {
+        const { error } = await supabase
+          .from("comment_reactions")
+          .delete()
+          .eq("comment_id", commentId)
+          .eq("user_id", actualUid)
+          .eq("reaction", reaction);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from("comment_reactions")
+          .insert({ comment_id: commentId, user_id: actualUid, reaction } as any);
+        if (error) throw error;
+      }
+    } catch {
+      // Revert optimistic update on failure.
+      setMyCommentReactions((prev) => {
+        const current = prev[commentId] ?? [];
+        const next = wasActive ? [...current, reaction] : current.filter((x) => x !== reaction);
+        return { ...prev, [commentId]: next };
+      });
+
+      setCommentReactionCounts((prev) => {
+        const base = prev[commentId] ?? { like: 0, love: 0, fire: 0, laugh: 0, wow: 0 };
+        const delta = wasActive ? 1 : -1;
+        return {
+          ...prev,
+          [commentId]: {
+            ...base,
+            [reaction]: Math.max(0, (base[reaction] ?? 0) + delta),
+          },
+        };
+      });
+    }
   };
 
   useFocusEffect(
@@ -490,8 +632,9 @@ export default function PostScreen() {
           post_id: postId,
           user_id: me,
           content,
+          parent_id: replyingTo?.id ?? null,
         })
-        .select("id, content, created_at, user_id")
+        .select("id, content, created_at, user_id, parent_id")
         .single();
 
       if (insertErr) {
@@ -515,11 +658,22 @@ export default function PostScreen() {
         content: inserted.content,
         created_at: inserted.created_at,
         user_id: inserted.user_id,
+        parent_id: inserted.parent_id ?? null,
         author_name: myProfile?.full_name ?? "Rider",
       };
 
+      const postOwnerId = String(post?.user_id ?? "");
+      if (postOwnerId && postOwnerId !== me) {
+        await sendPushEvent({
+          recipientUserId: postOwnerId,
+          type: "comment",
+          postId,
+        });
+      }
+
       setComments((prev) => [...prev, newComment]);
       setText("");
+      setReplyingTo(null);
       Keyboard.dismiss();
 
       const { data: verifyRows, error: verifyErr } = await supabase
@@ -533,11 +687,11 @@ export default function PostScreen() {
           "Comment verification failed",
           verifyErr ? formatSupabaseError(verifyErr) : "Comment insert returned success but verification could not find the row."
         );
-        await load();
+        await load({ silent: true });
         return;
       }
 
-      await load();
+      await load({ silent: true });
     } finally {
       setSending(false);
     }
@@ -690,7 +844,7 @@ export default function PostScreen() {
 
   if (loading || !post) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right", "bottom"]}>
         <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
           <Text style={{ color: COLORS.muted }}>Loading...</Text>
         </View>
@@ -700,12 +854,29 @@ export default function PostScreen() {
 
   const urls = (post.post_media ?? []).map((m) => m.url).filter(Boolean);
 
-  const inputBarHeight = 64;
+  const inputBarHeight = 64 + (replyingTo ? 36 : 0);
   const extraBottom = insets.bottom + 12;
   const bottomOffset = keyboardHeight > 0 ? keyboardHeight : 0;
 
   const currentIndex = carouselIndexByPost[post.id] ?? 0;
   const canDeletePostMedia = !!meId && meId === post.user_id;
+
+  const topLevelComments = comments.filter((c) => !c.parent_id);
+  const replyMap = new Map<string, CommentRow[]>();
+  for (const c of comments) {
+    if (c.parent_id) {
+      const existing = replyMap.get(c.parent_id) ?? [];
+      existing.push(c);
+      replyMap.set(c.parent_id, existing);
+    }
+  }
+  const threadedComments: Array<CommentRow & { isReply: boolean }> = [];
+  for (const c of topLevelComments) {
+    threadedComments.push({ ...c, isReply: false });
+    for (const r of replyMap.get(c.id) ?? []) {
+      threadedComments.push({ ...r, isReply: true });
+    }
+  }
 
   const ReasonChip = ({
     label,
@@ -724,7 +895,7 @@ export default function PostScreen() {
           borderRadius: 999,
           backgroundColor: active ? COLORS.button : COLORS.chip,
           borderWidth: 1,
-          borderColor: COLORS.border,
+          borderColor: active ? "#7CFFB2" : COLORS.border,
         }}
       >
         <Text style={{ color: active ? COLORS.buttonText : COLORS.text, fontWeight: "900", fontSize: 12 }}>
@@ -735,13 +906,13 @@ export default function PostScreen() {
   };
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right", "bottom"]}>
       <View style={{ padding: 16, paddingBottom: 10 }}>
         <View style={{ flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
           <View style={{ flex: 1 }}>
             <Text style={{ fontSize: 22, fontWeight: "900", color: COLORS.text }}>{post.author_name}</Text>
             <Text style={{ color: COLORS.muted, marginTop: 2 }}>
-              {post.visibility === "private" ? "Private" : "Public"} · {new Date(post.created_at).toLocaleString()}
+              {post.visibility === "private" ? "Private" : "Public"} · {timeAgo(post.created_at)}
             </Text>
           </View>
 
@@ -775,47 +946,129 @@ export default function PostScreen() {
           />
         ) : null}
 
-        {post.caption ? <Text style={{ marginTop: 10, fontSize: 16, color: COLORS.text }}>{post.caption}</Text> : null}
+        {post.caption ? <MentionText text={post.caption} textStyle={{ marginTop: 10, fontSize: 16, color: COLORS.text }} /> : null}
 
         <Text style={{ marginTop: 14, fontWeight: "900", color: COLORS.text }}>Comments ({comments.length})</Text>
       </View>
 
       <FlatList
-        data={comments}
+        data={threadedComments}
         keyExtractor={(item) => item.id}
         removeClippedSubviews={false}
+        extraData={{ commentReactionCounts, myCommentReactions, replyingTo }}
         contentContainerStyle={{
           paddingHorizontal: 16,
           paddingBottom: inputBarHeight + extraBottom + 16 + bottomOffset,
         }}
-        renderItem={({ item }) => (
-          <View style={{ paddingVertical: 10, borderTopWidth: 1, borderColor: COLORS.border }}>
-            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-              <Text style={{ fontWeight: "900", flex: 1, color: COLORS.text }}>{item.author_name}</Text>
-
-              {canDeleteComment(item.user_id) ? (
-                <Pressable
-                  onPress={() => deleteComment(item.id)}
+        renderItem={({ item }) => {
+          const reactionCounts = commentReactionCounts[item.id] ?? { like: 0, love: 0, fire: 0, laugh: 0, wow: 0 };
+          const myReactions = myCommentReactions[item.id] ?? [];
+          const visibleReactions = REACTION_OPTIONS.filter(
+            (opt) => reactionCounts[opt.key] > 0 || myReactions.includes(opt.key)
+          );
+          return (
+            <View
+              style={{
+                paddingVertical: 10,
+                borderTopWidth: 1,
+                borderColor: COLORS.border,
+                paddingLeft: item.isReply ? 20 : 0,
+              }}
+            >
+              {item.isReply ? (
+                <View
                   style={{
-                    paddingVertical: 6,
-                    paddingHorizontal: 10,
-                    borderRadius: 999,
-                    backgroundColor: COLORS.chip,
-                    borderWidth: 1,
-                    borderColor: COLORS.border,
+                    position: "absolute",
+                    left: 6,
+                    top: 10,
+                    bottom: 10,
+                    width: 2,
+                    backgroundColor: COLORS.border,
+                    borderRadius: 1,
                   }}
-                >
-                  <Text style={{ fontWeight: "900", color: COLORS.text }}>Delete</Text>
-                </Pressable>
+                />
+              ) : null}
+
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                <Text style={{ fontWeight: "900", flex: 1, color: COLORS.text }}>{item.author_name}</Text>
+                {canDeleteComment(item.user_id) ? (
+                  <Pressable
+                    onPress={() => deleteComment(item.id)}
+                    style={{
+                      paddingVertical: 6,
+                      paddingHorizontal: 10,
+                      borderRadius: 999,
+                      backgroundColor: COLORS.chip,
+                      borderWidth: 1,
+                      borderColor: COLORS.border,
+                    }}
+                  >
+                    <Text style={{ fontWeight: "900", color: COLORS.text }}>Delete</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+
+              <Text style={{ marginTop: 4, color: COLORS.text }}>{item.content}</Text>
+
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 14, marginTop: 6 }}>
+                <Text style={{ color: COLORS.muted, fontSize: 12 }}>{timeAgo(item.created_at)}</Text>
+                {!item.isReply ? (
+                  <Pressable
+                    onPress={() => setReplyingTo({ id: item.id, author_name: item.author_name })}
+                    hitSlop={8}
+                  >
+                    <Text style={{ color: COLORS.muted, fontSize: 12, fontWeight: "900" }}>Reply</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+
+              {commentReactionsEnabled ? (
+                <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 8 }}>
+                  {visibleReactions.map((opt) => {
+                    const mine = myReactions.includes(opt.key);
+                    const count = reactionCounts[opt.key] ?? 0;
+                    return (
+                      <Pressable
+                        key={`${item.id}:${opt.key}`}
+                        onPress={() => toggleCommentReaction(item.id, opt.key)}
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: 4,
+                          paddingVertical: 4,
+                          paddingHorizontal: 8,
+                          borderRadius: 999,
+                          borderWidth: 1,
+                          borderColor: mine ? "rgba(255,255,255,0.35)" : COLORS.border,
+                          backgroundColor: mine ? "rgba(255,255,255,0.12)" : COLORS.chip,
+                        }}
+                      >
+                        <Text style={{ fontSize: 13 }}>{opt.emoji}</Text>
+                        {count > 0 ? (
+                          <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 12 }}>{count}</Text>
+                        ) : null}
+                      </Pressable>
+                    );
+                  })}
+                  <Pressable
+                    onPress={() => setReactionPickerCommentId(item.id)}
+                    onLongPress={() => setReactionPickerCommentId(item.id)}
+                    style={{
+                      paddingVertical: 4,
+                      paddingHorizontal: 8,
+                      borderRadius: 999,
+                      borderWidth: 1,
+                      borderColor: COLORS.border,
+                      backgroundColor: COLORS.chip,
+                    }}
+                  >
+                    <Text style={{ fontSize: 13 }}>😊</Text>
+                  </Pressable>
+                </View>
               ) : null}
             </View>
-
-            <Text style={{ marginTop: 4, color: COLORS.text }}>{item.content}</Text>
-            <Text style={{ color: COLORS.muted, marginTop: 4, fontSize: 12 }}>
-              {new Date(item.created_at).toLocaleString()}
-            </Text>
-          </View>
-        )}
+          );
+        }}
       />
 
       <View
@@ -824,50 +1077,75 @@ export default function PostScreen() {
           left: 0,
           right: 0,
           bottom: keyboardHeight > 0 ? keyboardHeight : 0,
-          paddingHorizontal: 12,
-          paddingTop: 10,
-          paddingBottom: insets.bottom + 12,
           backgroundColor: COLORS.bg,
           borderTopWidth: 1,
           borderColor: COLORS.border,
-          flexDirection: "row",
-          gap: 10,
-          alignItems: "center",
         }}
       >
-        <TextInput
-          value={text}
-          onChangeText={setText}
-          placeholder="Write a comment..."
-          placeholderTextColor={COLORS.muted}
-          autoCapitalize="sentences"
-          autoCorrect
-          editable={!sending}
-          returnKeyType="send"
-          onSubmitEditing={addComment}
-          blurOnSubmit={false}
+        {replyingTo ? (
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              paddingHorizontal: 14,
+              paddingTop: 8,
+              paddingBottom: 4,
+              gap: 8,
+            }}
+          >
+            <Text style={{ color: COLORS.muted, fontSize: 13, flex: 1 }}>
+              Replying to{" "}
+              <Text style={{ color: COLORS.text, fontWeight: "900" }}>{replyingTo.author_name}</Text>
+            </Text>
+            <Pressable onPress={() => setReplyingTo(null)} hitSlop={10}>
+              <Text style={{ color: COLORS.muted, fontSize: 20, lineHeight: 22 }}>×</Text>
+            </Pressable>
+          </View>
+        ) : null}
+        <View
           style={{
-            flex: 1,
-            borderWidth: 1,
-            borderColor: COLORS.inputBorder,
-            padding: 12,
-            borderRadius: 12,
-            backgroundColor: COLORS.inputBg,
-            color: COLORS.text,
-          }}
-        />
-        <Pressable
-          onPress={addComment}
-          disabled={sending}
-          style={{
-            backgroundColor: sending ? "#777" : COLORS.button,
-            paddingVertical: 12,
-            paddingHorizontal: 14,
-            borderRadius: 12,
+            paddingHorizontal: 12,
+            paddingTop: 10,
+            paddingBottom: insets.bottom + 12,
+            flexDirection: "row",
+            gap: 10,
+            alignItems: "center",
           }}
         >
-          <Text style={{ color: COLORS.buttonText, fontWeight: "900" }}>{sending ? "..." : "Send"}</Text>
-        </Pressable>
+          <TextInput
+            value={text}
+            onChangeText={setText}
+            placeholder={t("feed.comment_placeholder", { defaultValue: "Write a comment..." })}
+            placeholderTextColor={COLORS.muted}
+            autoCapitalize="sentences"
+            autoCorrect
+            editable={!sending}
+            returnKeyType="send"
+            onSubmitEditing={addComment}
+            blurOnSubmit={false}
+            style={{
+              flex: 1,
+              borderWidth: 1,
+              borderColor: COLORS.inputBorder,
+              padding: 12,
+              borderRadius: 12,
+              backgroundColor: COLORS.inputBg,
+              color: COLORS.text,
+            }}
+          />
+          <Pressable
+            onPress={addComment}
+            disabled={sending}
+            style={{
+              backgroundColor: sending ? "#777" : COLORS.button,
+              paddingVertical: 12,
+              paddingHorizontal: 14,
+              borderRadius: 12,
+            }}
+          >
+            <Text style={{ color: COLORS.buttonText, fontWeight: "900" }}>{sending ? "..." : "Send"}</Text>
+          </Pressable>
+        </View>
       </View>
 
       <Modal transparent visible={actionsOpen} animationType="fade" onRequestClose={closeActions}>
@@ -914,6 +1192,16 @@ export default function PostScreen() {
             />
 
             <ActionRow label="Report" destructive onPress={openReport} />
+
+            {canDeleteThisPost ? (
+              <ActionRow
+                label="Edit post"
+                onPress={() => {
+                  closeActions();
+                  router.push({ pathname: "/edit-post", params: { id: post.id } });
+                }}
+              />
+            ) : null}
 
             {canDeleteThisPost ? (
               <ActionRow
@@ -1040,6 +1328,55 @@ export default function PostScreen() {
                 </Text>
               </Pressable>
             </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        transparent
+        visible={reactionPickerCommentId !== null}
+        animationType="fade"
+        onRequestClose={() => setReactionPickerCommentId(null)}
+      >
+        <Pressable
+          onPress={() => setReactionPickerCommentId(null)}
+          style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "flex-end", alignItems: "center" }}
+        >
+          <Pressable
+            onPress={() => {}}
+            style={{
+              marginBottom: insets.bottom + 90,
+              flexDirection: "row",
+              gap: 4,
+              backgroundColor: "#1A1A26",
+              borderRadius: 40,
+              paddingVertical: 10,
+              paddingHorizontal: 14,
+              borderWidth: 1,
+              borderColor: COLORS.border,
+              elevation: 10,
+            }}
+          >
+            {REACTION_OPTIONS.map((opt) => (
+              <Pressable
+                key={opt.key}
+                onPress={() => {
+                  const cid = reactionPickerCommentId;
+                  setReactionPickerCommentId(null);
+                  if (cid) toggleCommentReaction(cid, opt.key);
+                }}
+                style={({ pressed }) => ({
+                  width: 46,
+                  height: 46,
+                  borderRadius: 23,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: pressed ? "rgba(255,255,255,0.1)" : "transparent",
+                })}
+              >
+                <Text style={{ fontSize: 28 }}>{opt.emoji}</Text>
+              </Pressable>
+            ))}
           </Pressable>
         </Pressable>
       </Modal>

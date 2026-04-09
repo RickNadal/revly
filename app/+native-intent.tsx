@@ -13,6 +13,14 @@ export function redirectSystemPath({ path }: { path: string; initial: boolean })
       return "/reset-password";
     }
 
+    if (decodedPath.includes("payment-success")) {
+      return "/payment-success";
+    }
+
+    if (decodedPath.includes("payment-cancel")) {
+      return "/payment-cancel";
+    }
+
     return rawPath;
   } catch {
     return "/sign-in";

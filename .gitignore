@@ -32,6 +32,7 @@ yarn-error.*
 
 # local env files
 .env*.local
+credentials.json
 
 # typescript
 *.tsbuildinfo
@@ -41,3 +42,5 @@ app-example
 # generated native folders
 /ios
 /android
+
+eas jason file/oranga-social-074be63e93af.json

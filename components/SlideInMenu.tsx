@@ -1,14 +1,23 @@
+import * as Application from "expo-application";
 import { Ionicons } from "@expo/vector-icons";
+import Constants from "expo-constants";
 import { router } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Animated, Dimensions, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { supabase } from "../lib/supabase";
+import { signOutSafely, supabase } from "../lib/supabase";
 import { useMenu } from "./navigation/MenuProvider";
 
 type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
 type ProfileRole = "user" | "moderator" | "admin";
+type MenuItem = {
+  key: string;
+  fallback: string;
+  icon: IoniconName;
+  onPress: () => void;
+  section?: "events" | "money" | "support" | "staff";
+};
 
 const { width: W } = Dimensions.get("window");
 const PANEL_W = Math.min(320, Math.round(W * 0.82));
@@ -21,6 +30,7 @@ const COLORS = {
   muted: "#A7A7B5",
   chip: "#1D1D2A",
   money: "#2A2311",
+  support: "#14231F",
 };
 
 export default function SlideInMenu() {
@@ -29,6 +39,7 @@ export default function SlideInMenu() {
   const insets = useSafeAreaInsets();
 
   const [myRole, setMyRole] = useState<ProfileRole>("user");
+  const [myIsPremium, setMyIsPremium] = useState(false);
 
   const translateX = useRef(new Animated.Value(-PANEL_W)).current;
   const backdrop = useRef(new Animated.Value(0)).current;
@@ -55,54 +66,86 @@ export default function SlideInMenu() {
     }
   }, [isOpen, translateX, backdrop]);
 
-  const loadRole = async () => {
+  const loadProfileAccess = async () => {
     try {
       const { data: sessionData } = await supabase.auth.getSession();
       const session = sessionData.session;
 
       if (!session) {
-        if (isMountedRef.current) setMyRole("user");
+        if (isMountedRef.current) {
+          setMyRole("user");
+          setMyIsPremium(false);
+        }
         return;
       }
 
       const uid = session.user.id;
-      const { data, error } = await supabase.from("profiles").select("role").eq("id", uid).single();
+      const { data, error } = await supabase.from("profiles").select("role, is_premium").eq("id", uid).single();
 
       if (error) {
-        if (isMountedRef.current) setMyRole("user");
+        if (isMountedRef.current) {
+          setMyRole("user");
+          setMyIsPremium(false);
+        }
         return;
       }
 
-      if (isMountedRef.current) setMyRole(((data as any)?.role ?? "user") as ProfileRole);
+      if (isMountedRef.current) {
+        setMyRole(((data as any)?.role ?? "user") as ProfileRole);
+        setMyIsPremium(!!(data as any)?.is_premium);
+      }
     } catch {
-      if (isMountedRef.current) setMyRole("user");
+      if (isMountedRef.current) {
+        setMyRole("user");
+        setMyIsPremium(false);
+      }
     }
   };
 
   useEffect(() => {
-    if (isOpen) loadRole();
+    if (isOpen) loadProfileAccess();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
 
   const isModOrAdmin = myRole === "moderator" || myRole === "admin";
   const isAdmin = myRole === "admin";
 
-  const menuItems = useMemo<
-    { key: string; fallback: string; icon: IoniconName; onPress: () => void; section?: "money" | "staff" }[]
-  >(
+  const menuItems = useMemo<MenuItem[]>(
     () => {
-      const base = [
+      const base: MenuItem[] = [
         { key: "menu.home", fallback: "Home", icon: "home-outline" as const, onPress: () => router.replace("/") },
         { key: "menu.new_post", fallback: "New Post", icon: "add-circle-outline" as const, onPress: () => router.push("/new-post") },
+        { key: "menu.new_clip", fallback: "New Clip", icon: "videocam-outline" as const, onPress: () => router.push("/new-clip") },
         { key: "menu.search", fallback: "Search", icon: "search-outline" as const, onPress: () => router.push("/search") },
         { key: "menu.notifications", fallback: "Notifications", icon: "notifications-outline" as const, onPress: () => router.push("/notifications") },
         { key: "menu.messages", fallback: "Messages", icon: "chatbubble-ellipses-outline" as const, onPress: () => router.push("/messages") },
         { key: "menu.my_profile", fallback: "My Profile", icon: "person-outline" as const, onPress: () => router.push("/profile") },
         { key: "menu.language", fallback: "Language", icon: "language-outline" as const, onPress: () => router.push("/language") },
+        { key: "menu.feedback", fallback: "Send feedback", icon: "mail-outline" as const, onPress: () => router.push("/feedback") },
+
+        { key: "menu.events", fallback: "Events", icon: "calendar-outline" as const, onPress: () => router.push("/events"), section: "events" as const },
+        { key: "menu.bike_of_month", fallback: "Bike Of The Month", icon: "trophy-outline" as const, onPress: () => router.push("/bike-of-month"), section: "events" as const },
+        { key: "menu.bike_hall_of_fame", fallback: "Bike Hall Of Fame", icon: "medal-outline" as const, onPress: () => router.push("/bike-hall-of-fame"), section: "events" as const },
 
         { key: "menu.marketplace", fallback: "Marketplace", icon: "pricetag-outline" as const, onPress: () => router.push("/sell"), section: "money" as const },
+        { key: "menu.stores", fallback: "Stores", icon: "storefront-outline" as const, onPress: () => router.push("/stores"), section: "money" as const },
+        { key: "menu.dealer_account", fallback: "Dealer account", icon: "business-outline" as const, onPress: () => router.push("/dealer-account"), section: "money" as const },
         { key: "menu.advertise", fallback: "Advertise", icon: "megaphone-outline" as const, onPress: () => router.push("/advertise"), section: "money" as const },
+        { key: "menu.house_sponsor_request", fallback: "House Sponsor", icon: "images-outline" as const, onPress: () => router.push("/house-sponsor-request"), section: "money" as const },
+
+        { key: "menu.premium", fallback: "Premium", icon: "sparkles-outline" as const, onPress: () => router.push("/premium"), section: "support" as const },
+        { key: "menu.donations", fallback: "Donations", icon: "heart-outline" as const, onPress: () => router.push("/donations"), section: "support" as const },
       ];
+
+      if (myIsPremium) {
+        base.push({
+          key: "menu.early_access",
+          fallback: "Early Access",
+          icon: "flask-outline" as const,
+          onPress: () => router.push("/early-access"),
+          section: "support" as const,
+        });
+      }
 
       if (isModOrAdmin) {
         base.push({
@@ -110,6 +153,13 @@ export default function SlideInMenu() {
           fallback: "Moderation",
           icon: "shield-checkmark-outline" as const,
           onPress: () => router.push("/moderation"),
+          section: "staff" as const,
+        });
+        base.push({
+          key: "menu.banned_users",
+          fallback: "Banned users",
+          icon: "ban-outline" as const,
+          onPress: () => router.push("/moderation-bans"),
           section: "staff" as const,
         });
       }
@@ -122,18 +172,39 @@ export default function SlideInMenu() {
           onPress: () => router.push("/admin-feedback"),
           section: "staff" as const,
         });
+        base.push({
+          key: "menu.botm_admin_panel",
+          fallback: "BOTM Admin Panel",
+          icon: "trash-bin-outline" as const,
+          onPress: () => router.push("/botm-admin"),
+          section: "staff" as const,
+        });
       }
 
       return base;
     },
-    [isModOrAdmin, isAdmin]
+    [isModOrAdmin, isAdmin, myIsPremium]
   );
 
   const topPad = insets.top + 14;
   const bottomPad = Math.max(insets.bottom, 12);
 
+  const buildLabel = useMemo(() => {
+    const appName = String((Constants as any)?.expoConfig?.name ?? "Oranga");
+    const version = String(
+      (Constants as any)?.expoConfig?.version ??
+      (Constants as any)?.manifest?.version ??
+      (Constants as any)?.manifest2?.extra?.expoClient?.version ??
+      "unknown"
+    );
+    const nativeBuild = String((Application as any)?.nativeBuildVersion ?? "?");
+    return `${appName} v${version} (${nativeBuild})`;
+  }, []);
+
   const mainItems = menuItems.filter((x) => !x.section);
+  const eventItems = menuItems.filter((x) => x.section === "events");
   const moneyItems = menuItems.filter((x) => x.section === "money");
+  const supportItems = menuItems.filter((x) => x.section === "support");
   const staffItems = menuItems.filter((x) => x.section === "staff");
 
   return (
@@ -184,6 +255,24 @@ export default function SlideInMenu() {
             </Pressable>
           ))}
 
+          <Text style={[styles.sectionLabel, { marginTop: 10 }]}>{t("menu.events_section", { defaultValue: "Events" })}</Text>
+
+          {eventItems.map((it) => (
+            <Pressable
+              key={it.key}
+              onPress={() => {
+                closeMenu();
+                it.onPress();
+              }}
+              style={styles.row}
+            >
+              <View style={styles.iconBox}>
+                <Ionicons name={it.icon} size={18} color={COLORS.text} />
+              </View>
+              <Text style={styles.rowText}>{t(it.key, { defaultValue: it.fallback })}</Text>
+            </Pressable>
+          ))}
+
           <Text style={[styles.sectionLabel, { marginTop: 10 }]}>{t("menu.earn", { defaultValue: "Earn" })}</Text>
 
           {moneyItems.map((it) => (
@@ -210,6 +299,24 @@ export default function SlideInMenu() {
               {t("menu.rent_coming_soon", { defaultValue: "Rent bikes (coming soon)" })}
             </Text>
           </View>
+
+          <Text style={[styles.sectionLabel, { marginTop: 10 }]}>{t("menu.support", { defaultValue: "Support" })}</Text>
+
+          {supportItems.map((it) => (
+            <Pressable
+              key={it.key}
+              onPress={() => {
+                closeMenu();
+                it.onPress();
+              }}
+              style={[styles.row, { backgroundColor: COLORS.support }]}
+            >
+              <View style={styles.iconBox}>
+                <Ionicons name={it.icon} size={18} color={COLORS.text} />
+              </View>
+              <Text style={styles.rowText}>{t(it.key, { defaultValue: it.fallback })}</Text>
+            </Pressable>
+          ))}
 
           {staffItems.length ? (
             <>
@@ -238,7 +345,7 @@ export default function SlideInMenu() {
           <Pressable
             onPress={async () => {
               closeMenu();
-              await supabase.auth.signOut();
+              await signOutSafely();
               router.replace("/sign-in");
             }}
             style={[styles.row, { marginBottom: 8, backgroundColor: "#2A1114" }]}
@@ -249,7 +356,7 @@ export default function SlideInMenu() {
             <Text style={styles.rowText}>{t("menu.log_out", { defaultValue: "Log out" })}</Text>
           </Pressable>
 
-          <Text style={styles.footer}>v1.0</Text>
+          <Text style={styles.footer}>{buildLabel}</Text>
         </View>
       </Animated.View>
     </View>

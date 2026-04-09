@@ -195,7 +195,7 @@ export default function MessagesScreen() {
   }, [searchLoading, searchText, t]);
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right", "bottom"]}>
       <View style={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 10 }}>
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
           <Pressable
@@ -239,7 +239,7 @@ export default function MessagesScreen() {
       <FlatList
         data={rows}
         keyExtractor={(x) => x.thread_id}
-        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 30 }}
+        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: Math.max(insets.bottom + 30, 46) }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         ListEmptyComponent={
           <View style={{ paddingTop: 14 }}>

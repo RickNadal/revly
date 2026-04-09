@@ -1,9 +1,9 @@
-// app/advertise.tsx
-import { router } from "expo-router";
-import React from "react";
+import { router, useFocusEffect } from "expo-router";
+import React, { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { getBusinessAccessSummary, type BusinessAccessSummary } from "../lib/ads/businessAccess";
 
 const COLORS = {
   bg: "#0B0B0F",
@@ -19,6 +19,42 @@ const COLORS = {
 
 export default function AdvertiseScreen() {
   const { t } = useTranslation();
+  const [access, setAccess] = useState<BusinessAccessSummary | null>(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      let alive = true;
+      (async () => {
+        const summary = await getBusinessAccessSummary();
+        if (alive) setAccess(summary);
+      })();
+      return () => {
+        alive = false;
+      };
+    }, [])
+  );
+
+  const ctaLabel = useMemo(() => {
+    if (access?.nextStep === "sign-in") return t("advertise.request_cta", { defaultValue: "Sign in to continue" });
+    if (access?.nextStep === "manage") return t("advertise.request_cta", { defaultValue: "Open campaign manager" });
+    if (access?.nextStep === "review") return t("advertise.request_cta", { defaultValue: "View business access status" });
+    if (access?.nextStep === "pay") return t("advertise.request_cta", { defaultValue: "Complete subscription setup" });
+    return t("advertise.request_cta", { defaultValue: "Apply for business access" });
+  }, [access?.nextStep, t]);
+
+  const openNextRoute = useCallback(() => {
+    if (access?.nextStep === "sign-in") {
+      router.replace("/sign-in");
+      return;
+    }
+
+    if (access?.nextStep === "manage") {
+      router.push("/advertise/manage");
+      return;
+    }
+
+    router.push("/advertise/request");
+  }, [access?.nextStep]);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
@@ -38,7 +74,6 @@ export default function AdvertiseScreen() {
           })}
         </Text>
 
-        {/* House sponsor */}
         <View
           style={{
             marginTop: 14,
@@ -49,62 +84,32 @@ export default function AdvertiseScreen() {
             padding: 14,
           }}
         >
-          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-            <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 16 }}>
-              {t("advertise.house.title", { defaultValue: "House Sponsor" })}
-            </Text>
-
-            <View
-              style={{
-                paddingVertical: 6,
-                paddingHorizontal: 10,
-                borderRadius: 999,
-                backgroundColor: COLORS.accent,
-                borderWidth: 1,
-                borderColor: COLORS.border,
-              }}
-            >
-              <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 12 }}>
-                {t("advertise.house.badge", { defaultValue: "Funding the project" })}
-              </Text>
-            </View>
-          </View>
-
-          <Text style={{ color: COLORS.text, fontWeight: "900", marginTop: 10 }}>
-            {t("advertise.house.brand", { defaultValue: "Decazi.com" })}
+          <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 16 }}>
+            {t("advertise.account.title", { defaultValue: "Business access" })}
           </Text>
 
           <Text style={{ color: COLORS.muted, marginTop: 8, lineHeight: 20 }}>
-            {t("advertise.house.body", {
-              defaultValue:
-                "Oranga is funded by Decazi.com. House Sponsor campaigns support development and help keep the product moving fast.",
-            })}
+            {access?.canAdvertise
+              ? t("advertise.account.active", {
+                  defaultValue: "Your business account is active on the {{tier}} tier. Active placements: {{count}} / {{max}}.",
+                  tier: access.tier?.name ?? "tier",
+                  count: access.activeCampaignCount,
+                  max: access.tier?.max_active_campaigns ?? 0,
+                })
+              : access?.nextStep === "review"
+                ? t("advertise.account.review", {
+                    defaultValue: "Your business profile is pending review. Once approved, you can complete payment and start campaigns.",
+                  })
+                : access?.nextStep === "pay"
+                  ? t("advertise.account.pay", {
+                      defaultValue: "Your business profile is approved, but billing is not active yet. Complete payment to unlock placements.",
+                    })
+                  : t("advertise.account.none", {
+                      defaultValue: "Dealer accounts are behind a paywall. Pick a tier, request access, and then activate billing before ads can run.",
+                    })}
           </Text>
-
-          <View
-            style={{
-              marginTop: 12,
-              padding: 12,
-              borderRadius: 14,
-              backgroundColor: COLORS.chip,
-              borderWidth: 1,
-              borderColor: COLORS.border,
-            }}
-          >
-            <Text style={{ color: COLORS.text, fontWeight: "900" }}>
-              {t("advertise.house.how_title", { defaultValue: "How it appears in the feed" })}
-            </Text>
-
-            <Text style={{ color: COLORS.muted, marginTop: 6, lineHeight: 20 }}>
-              {t("advertise.house.how_bullets", {
-                defaultValue:
-                  "• Labeled “House Sponsor”\n• Premium native post layout (looks like a real post)\n• Appears roughly every ~10 posts in Discover\n• Less frequent in Following\n• Users can hide a campaign locally",
-              })}
-            </Text>
-          </View>
         </View>
 
-        {/* Sponsor packages */}
         <View
           style={{
             marginTop: 14,
@@ -122,7 +127,7 @@ export default function AdvertiseScreen() {
           <Text style={{ color: COLORS.muted, marginTop: 8, lineHeight: 20 }}>
             {t("advertise.placements.subtitle", {
               defaultValue:
-                "Brands, shops, events, and local businesses can run Sponsored campaigns that still respect the feed experience.",
+                "Motorcycle dealers and businesses can run native-looking sponsored placements that respect the feed experience.",
             })}
           </Text>
 
@@ -137,13 +142,13 @@ export default function AdvertiseScreen() {
             }}
           >
             <Text style={{ color: COLORS.text, fontWeight: "900" }}>
-              {t("advertise.placements.requirements_title", { defaultValue: "Requirements" })}
+              {t("advertise.placements.packages_title", { defaultValue: "Packages" })}
             </Text>
 
             <Text style={{ color: COLORS.muted, marginTop: 6, lineHeight: 20 }}>
-              {t("advertise.placements.requirements_bullets", {
+              {t("advertise.placements.packages_bullets", {
                 defaultValue:
-                  "• Clear sponsor name + label (“Sponsored”)\n• Short body copy + CTA\n• Optional image\n• No misleading claims, no spam, no adult content",
+                  "• Dealer Basic: Discover placements only, up to 2 active campaigns\n• Dealer Pro: Discover + Following, up to 6 active campaigns\n• Pro gets heavier rotation weight and broader reach\n• Add-ons later can sell extra placement volume without changing tier",
               })}
             </Text>
           </View>
@@ -159,21 +164,20 @@ export default function AdvertiseScreen() {
             }}
           >
             <Text style={{ color: COLORS.text, fontWeight: "900" }}>
-              {t("advertise.placements.packages_title", { defaultValue: "Example packages" })}
+              {t("advertise.placements.requirements_title", { defaultValue: "Requirements" })}
             </Text>
 
             <Text style={{ color: COLORS.muted, marginTop: 6, lineHeight: 20 }}>
-              {t("advertise.placements.packages_bullets", {
+              {t("advertise.placements.requirements_bullets", {
                 defaultValue:
-                  "• Local sponsor (city/region)\n• Event promotion (date window)\n• Shop promotion (weekly rotation)\n• Premium native post + basic reporting (impressions/clicks)",
+                  "• Active paid business tier required\n• Moderator approval before campaigns go live\n• Clear sponsor name + CTA\n• No misleading claims, no spam, no adult content",
               })}
             </Text>
           </View>
         </View>
 
-        {/* ACTION */}
         <Pressable
-          onPress={() => router.push("/advertise/request")}
+          onPress={openNextRoute}
           style={{
             marginTop: 16,
             backgroundColor: COLORS.button,
@@ -182,9 +186,7 @@ export default function AdvertiseScreen() {
             alignItems: "center",
           }}
         >
-          <Text style={{ color: COLORS.buttonText, fontWeight: "900" }}>
-            {t("advertise.request_cta", { defaultValue: "Request a campaign" })}
-          </Text>
+          <Text style={{ color: COLORS.buttonText, fontWeight: "900" }}>{ctaLabel}</Text>
         </Pressable>
 
         <Pressable onPress={() => router.back()} style={{ marginTop: 12, alignItems: "center", padding: 10 }}>

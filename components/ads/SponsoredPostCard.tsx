@@ -30,11 +30,13 @@ type Props = {
   onPressCta: (ad: SponsoredAd) => void | Promise<void>;
   onHide: (adId: string) => void;
   onImpression?: (campaignId: string, placement: Placement) => void | Promise<void>;
+  onDisableHouseSponsors?: () => void;
 };
 
-export function SponsoredPostCard({ ad, placement, onPressCta, onHide, onImpression }: Props) {
+export function SponsoredPostCard({ ad, placement, onPressCta, onHide, onImpression, onDisableHouseSponsors }: Props) {
   const { t } = useTranslation();
   const hasImage = !!ad.image_url;
+  const isHouseSponsor = ad.sponsor_tag === "House Sponsor";
 
   useEffect(() => {
     onImpression?.(ad.id, placement);
@@ -42,7 +44,7 @@ export function SponsoredPostCard({ ad, placement, onPressCta, onHide, onImpress
   }, [ad.id, placement]);
 
   const badgeLabel =
-    ad.sponsor_tag === "House Sponsor"
+    isHouseSponsor
       ? t("ads.badge_house", { defaultValue: "House Sponsor" })
       : t("ads.badge_sponsored", { defaultValue: "Sponsored" });
 
@@ -120,6 +122,30 @@ export function SponsoredPostCard({ ad, placement, onPressCta, onHide, onImpress
               {t("common.hide", { defaultValue: "Hide" })}
             </Text>
           </Pressable>
+
+          {isHouseSponsor ? (
+            <Pressable
+              onPress={() => {
+                onDisableHouseSponsors?.();
+                Alert.alert(
+                  t("ads.house_disabled_title", { defaultValue: "House Sponsors disabled" }),
+                  t("ads.house_disabled_body", { defaultValue: "You can re-enable this later from settings if needed." })
+                );
+              }}
+              style={{
+                paddingVertical: 6,
+                paddingHorizontal: 10,
+                borderRadius: 999,
+                backgroundColor: COLORS.chip,
+                borderWidth: 1,
+                borderColor: COLORS.border,
+              }}
+            >
+              <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 12 }}>
+                {t("ads.disable_house", { defaultValue: "Turn off House" })}
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
       </View>
 

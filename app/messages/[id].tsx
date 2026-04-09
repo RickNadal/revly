@@ -2,6 +2,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
     FlatList,
     Keyboard,
@@ -40,6 +41,7 @@ const COLORS = {
 };
 
 export default function MessageThreadScreen() {
+  const { t } = useTranslation();
   const params = useLocalSearchParams<{ id: string }>();
   const threadId = params.id;
 
@@ -47,7 +49,7 @@ export default function MessageThreadScreen() {
 
   const [meId, setMeId] = useState<string | null>(null);
   const [thread, setThread] = useState<ThreadRow | null>(null);
-  const [otherName, setOtherName] = useState("Messages");
+  const [otherName, setOtherName] = useState(t("messages.title", { defaultValue: "Messages" }));
 
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -107,7 +109,7 @@ export default function MessageThreadScreen() {
 
     const otherId = uid === (t as any).user_a ? (t as any).user_b : (t as any).user_a;
     const { data: prof } = await supabase.from("profiles").select("full_name").eq("id", otherId).maybeSingle();
-    setOtherName(prof?.full_name ?? "Rider");
+    setOtherName(prof?.full_name ?? t("feed.rider_fallback", { defaultValue: "Rider" }));
 
     const { data: msgs, error: mErr } = await supabase
       .from("dm_messages")
@@ -126,7 +128,7 @@ export default function MessageThreadScreen() {
         listRef.current?.scrollToEnd({ animated: false });
       } catch {}
     }, 30);
-  }, [threadId]);
+  }, [threadId, t]);
 
   useFocusEffect(
     useCallback(() => {
@@ -239,7 +241,9 @@ export default function MessageThreadScreen() {
               {otherName}
             </Text>
             <Text style={{ color: COLORS.muted, fontWeight: "800", marginTop: 2, fontSize: 12 }}>
-              {loading ? "Loading…" : "Text chat"}
+              {loading
+                ? t("messages.loading", { defaultValue: "Loading…" })
+                : t("messages.thread_subtitle", { defaultValue: "Text chat" })}
             </Text>
           </View>
 
@@ -272,7 +276,9 @@ export default function MessageThreadScreen() {
         }}
         ListEmptyComponent={
           <View style={{ paddingHorizontal: 16, paddingTop: 10 }}>
-            <Text style={{ color: COLORS.muted }}>No messages yet.</Text>
+            <Text style={{ color: COLORS.muted }}>
+              {t("messages.no_messages_yet", { defaultValue: "No messages yet" })}
+            </Text>
           </View>
         }
       />
@@ -298,7 +304,7 @@ export default function MessageThreadScreen() {
         <TextInput
           value={text}
           onChangeText={setText}
-          placeholder="Message…"
+          placeholder={t("messages.input_placeholder", { defaultValue: "Message…" })}
           placeholderTextColor={COLORS.muted}
           multiline
           style={{
@@ -324,7 +330,9 @@ export default function MessageThreadScreen() {
             borderColor: COLORS.border,
           }}
         >
-          <Text style={{ color: COLORS.buttonText, fontWeight: "900" }}>{sending ? "…" : "Send"}</Text>
+          <Text style={{ color: COLORS.buttonText, fontWeight: "900" }}>
+            {sending ? "…" : t("messages.send", { defaultValue: "Send" })}
+          </Text>
         </Pressable>
       </View>
     </SafeAreaView>

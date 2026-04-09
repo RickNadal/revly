@@ -1,46 +1,62 @@
 // app/viewer.tsx
+import { Ionicons } from "@expo/vector-icons";
+import { ResizeMode, Video } from "expo-av";
 import { router, useLocalSearchParams } from "expo-router";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Alert,
-  Animated,
-  Dimensions,
-  FlatList,
-  Image,
-  Modal,
-  NativeScrollEvent,
-  NativeSyntheticEvent,
-  PanResponder,
-  Platform,
-  Pressable,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
+    Alert,
+    Animated,
+    Dimensions,
+    FlatList,
+    Image,
+    Modal,
+    NativeScrollEvent,
+    NativeSyntheticEvent,
+    PanResponder,
+    Pressable,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TextInput,
+    View
 } from "react-native";
+import { PinchGestureHandler, State, TapGestureHandler } from "react-native-gesture-handler";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { isVideoUrl } from "../components/media/MediaThumbnail";
+import AnimatedSelectableButton from "../components/ui/AnimatedSelectableButton";
 import { supabase } from "../lib/supabase";
 
 type ViewerParams = {
-  // Existing:
-  urls?: string; // JSON stringified string[] OR comma-separated
-  url?: string; // single url fallback
-  index?: string; // initial index
-
-  // New (passed from post.tsx):
+  urls?: string;
+  url?: string;
+  index?: string;
+  clips?: string;
   postId?: string;
   ownerId?: string;
-
-  // JSON stringified: { url: string; sort_order?: number }[]
+  authorName?: string;
+  authorAvatarUrl?: string;
   media?: string;
-
-  // "1" or "0" - viewer can show delete only if this is "1"
   canDelete?: string;
+  likeCount?: string;
+  commentCount?: string;
+  likedByMe?: string;
 };
 
 type MediaRow = {
   url: string;
   sort_order?: number;
+};
+
+type ClipFeedItem = {
+  url: string;
+  postId: string;
+  ownerId?: string;
+  authorName?: string;
+  authorAvatarUrl?: string;
+  canDelete?: boolean;
+  likeCount?: number;
+  commentCount?: number;
+  likedByMe?: boolean;
 };
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
@@ -70,7 +86,40 @@ function parseUrls(raw?: string | null): string[] {
     .filter(Boolean);
 }
 
-// IMPORTANT: Do NOT use new URL() here (can crash in RN if polyfill not ready)
+function parseBoolLike(value: unknown): boolean {
+  const raw = String(value ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true";
+}
+
+function parseClipFeed(raw?: string | null): ClipFeedItem[] {
+  const source = raw?.trim();
+  if (!source) return [];
+  try {
+    const parsed = JSON.parse(source);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item: any) => {
+        const url = String(item?.url ?? "").trim();
+        const postId = String(item?.postId ?? "").trim();
+        if (!url || !postId) return null;
+        return {
+          url,
+          postId,
+          ownerId: String(item?.ownerId ?? "").trim() || undefined,
+          authorName: String(item?.authorName ?? "").trim() || undefined,
+          authorAvatarUrl: String(item?.authorAvatarUrl ?? "").trim() || undefined,
+          canDelete: parseBoolLike(item?.canDelete),
+          likeCount: Number.isFinite(Number(item?.likeCount)) ? Math.max(0, Number(item?.likeCount)) : 0,
+          commentCount: Number.isFinite(Number(item?.commentCount)) ? Math.max(0, Number(item?.commentCount)) : 0,
+          likedByMe: parseBoolLike(item?.likedByMe),
+        } as ClipFeedItem;
+      })
+      .filter((item): item is ClipFeedItem => !!item);
+  } catch {
+    return [];
+  }
+}
+
 function guessStoragePathFromPublicUrl(_publicUrl: string): string | null {
   return null;
 }
@@ -87,21 +136,148 @@ function isDuplicateKeyError(err: any) {
   return false;
 }
 
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function ZoomableImage({
+  uri,
+  isActive,
+  onZoomStateChange,
+}: {
+  uri: string;
+  isActive: boolean;
+  onZoomStateChange: (zoomed: boolean) => void;
+}) {
+  const pinchRef = useRef<any>(null);
+  const doubleTapRef = useRef<any>(null);
+  const baseScale = useRef(new Animated.Value(1)).current;
+  const pinchScale = useRef(new Animated.Value(1)).current;
+  const scale = useRef(Animated.multiply(baseScale, pinchScale)).current;
+  const lastScaleRef = useRef(1);
+
+  const animateToScale = useCallback(
+    (nextScale: number, animate: boolean = true) => {
+      const clampedScale = clamp(nextScale, 1, 4);
+      lastScaleRef.current = clampedScale;
+      baseScale.stopAnimation();
+      pinchScale.setValue(1);
+
+      if (animate) {
+        Animated.timing(baseScale, {
+          toValue: clampedScale,
+          duration: 140,
+          useNativeDriver: true,
+        }).start();
+      } else {
+        baseScale.setValue(clampedScale);
+      }
+
+      onZoomStateChange(clampedScale > 1.01);
+    },
+    [baseScale, onZoomStateChange, pinchScale]
+  );
+
+  const resetZoom = useCallback(() => {
+    lastScaleRef.current = 1;
+    pinchScale.setValue(1);
+    baseScale.setValue(1);
+    onZoomStateChange(false);
+  }, [baseScale, onZoomStateChange, pinchScale]);
+
+  useEffect(() => {
+    if (!isActive) {
+      resetZoom();
+    }
+  }, [isActive, resetZoom]);
+
+  const onPinchGestureEvent = Animated.event([{ nativeEvent: { scale: pinchScale } }], {
+    useNativeDriver: true,
+  });
+
+  const onPinchStateChange = (event: any) => {
+    if (event.nativeEvent.oldState !== State.ACTIVE) return;
+    const nextScale = lastScaleRef.current * Number(event.nativeEvent.scale ?? 1);
+    // Commit immediately on pinch release to avoid a visible snap/fl ash frame.
+    animateToScale(nextScale, false);
+  };
+
+  const onDoubleTapStateChange = (event: any) => {
+    if (event.nativeEvent.state !== State.ACTIVE) return;
+    animateToScale(lastScaleRef.current > 1.01 ? 1 : 2.5);
+  };
+
+  return (
+    <TapGestureHandler ref={doubleTapRef} numberOfTaps={2} onHandlerStateChange={onDoubleTapStateChange}>
+      <Animated.View style={styles.zoomViewport}>
+        <PinchGestureHandler
+          ref={pinchRef}
+          simultaneousHandlers={doubleTapRef}
+          onGestureEvent={onPinchGestureEvent}
+          onHandlerStateChange={onPinchStateChange}
+        >
+          <Animated.View style={{ transform: [{ scale }] }}>
+            <Image source={{ uri }} style={styles.image} resizeMode="contain" />
+          </Animated.View>
+        </PinchGestureHandler>
+      </Animated.View>
+    </TapGestureHandler>
+  );
+}
+
+function ViewerVideo({ uri, isActive, isMuted, isPaused }: { uri: string; isActive: boolean; isMuted: boolean; isPaused: boolean }) {
+  const videoRef = useRef<Video | null>(null);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (!isActive || isPaused) {
+      void video.pauseAsync().catch(() => {});
+      return;
+    }
+    void video.playAsync().catch(() => {});
+  }, [isActive, isPaused]);
+
+  return (
+    <Video
+      ref={videoRef}
+      source={{ uri }}
+      style={styles.image}
+      resizeMode={ResizeMode.CONTAIN}
+      useNativeControls={false}
+      shouldPlay={isActive && !isPaused}
+      isMuted={isMuted}
+      isLooping
+      onLoad={() => {
+        if (isActive && !isPaused) {
+          void videoRef.current?.playAsync().catch(() => {});
+        }
+      }}
+    />
+  );
+}
+
 export default function ViewerScreen() {
   const params = useLocalSearchParams<ViewerParams>();
+  const insets = useSafeAreaInsets();
   const listRef = useRef<FlatList<string>>(null);
 
-  // Vertical swipe-to-dismiss animation state
   const translateY = useRef(new Animated.Value(0)).current;
   const backdropOpacity = useRef(new Animated.Value(1)).current;
 
-  const postId = (params.postId ?? "").trim();
-  const ownerId = (params.ownerId ?? "").trim();
+  const fallbackPostId = (params.postId ?? "").trim();
+  const fallbackOwnerId = (params.ownerId ?? "").trim();
+  const fallbackAuthorName = (params.authorName ?? "").trim();
+  const fallbackAuthorAvatarUrl = (params.authorAvatarUrl ?? "").trim();
+  const fallbackLikeCount = Number.parseInt((params.likeCount ?? "0").trim(), 10);
+  const fallbackCommentCount = Number.parseInt((params.commentCount ?? "0").trim(), 10);
+  const fallbackLikedByMe = parseBoolLike(params.likedByMe ?? "");
 
-  const canDelete = useMemo(() => {
-    const raw = (params.canDelete ?? "").trim();
-    return raw === "1" || raw.toLowerCase() === "true";
-  }, [params.canDelete]);
+  const fallbackCanDelete = useMemo(() => parseBoolLike(params.canDelete ?? ""), [params.canDelete]);
+
+  const clipFeed = useMemo<ClipFeedItem[]>(() => parseClipFeed(params.clips), [params.clips]);
+  const hasClipFeed = clipFeed.length > 0;
+  const isVerticalClipFeed = hasClipFeed;
 
   const media = useMemo<MediaRow[]>(() => {
     const raw = params.media?.trim();
@@ -121,7 +297,7 @@ export default function ViewerScreen() {
   }, [params.media]);
 
   const images = useMemo<string[]>(() => {
-    // Prefer media urls if provided (so index always matches DB order)
+    if (hasClipFeed) return clipFeed.map((item) => item.url).filter(Boolean);
     if (media.length) return media.map((m) => m.url).filter(Boolean);
 
     const rawUrls = params.urls?.trim();
@@ -129,7 +305,7 @@ export default function ViewerScreen() {
 
     if (params.url?.trim()) return [params.url.trim()];
     return [];
-  }, [media, params.urls, params.url]);
+  }, [clipFeed, hasClipFeed, media, params.urls, params.url]);
 
   const initialIndex = useMemo(() => {
     const n = Number(params.index ?? "0");
@@ -139,8 +315,15 @@ export default function ViewerScreen() {
 
   const [activeIndex, setActiveIndex] = useState(initialIndex);
   const [busy, setBusy] = useState(false);
+  const [clipMuted, setClipMuted] = useState(true);
+  const [clipPaused, setClipPaused] = useState(false);
+  const [likeCount, setLikeCount] = useState(Number.isFinite(fallbackLikeCount) ? Math.max(0, fallbackLikeCount) : 0);
+  const [commentCount, setCommentCount] = useState(Number.isFinite(fallbackCommentCount) ? Math.max(0, fallbackCommentCount) : 0);
+  const [likedByMe, setLikedByMe] = useState(fallbackLikedByMe);
+  const [liking, setLiking] = useState(false);
+  const [zoomedIndex, setZoomedIndex] = useState<number | null>(null);
+  const zoomedRef = useRef(false);
 
-  // --- Report UI state ---
   const [reportOpen, setReportOpen] = useState(false);
   const [reportReason, setReportReason] = useState<
     "spam" | "harassment" | "nudity" | "violence" | "hate" | "scam" | "other"
@@ -148,7 +331,55 @@ export default function ViewerScreen() {
   const [reportDetails, setReportDetails] = useState("");
   const [reporting, setReporting] = useState(false);
 
-  const canReport = !!postId; // must have a postId to report
+  const activeClip = hasClipFeed ? clipFeed[activeIndex] : undefined;
+  const postId = activeClip?.postId ?? fallbackPostId;
+  const ownerId = activeClip?.ownerId ?? fallbackOwnerId;
+  const authorName = activeClip?.authorName ?? fallbackAuthorName;
+  const authorAvatarUrl = activeClip?.authorAvatarUrl ?? fallbackAuthorAvatarUrl;
+  const canDelete = activeClip?.canDelete ?? fallbackCanDelete;
+
+  const canReport = !!postId;
+  const isClipActive = !!postId && isVideoUrl(images[activeIndex] ?? "");
+  const canDeleteInViewer = canDelete && !hasClipFeed;
+
+  useEffect(() => {
+    if (!hasClipFeed || !activeClip) return;
+    setLikeCount(Number.isFinite(activeClip.likeCount) ? Math.max(0, Number(activeClip.likeCount)) : 0);
+    setCommentCount(Number.isFinite(activeClip.commentCount) ? Math.max(0, Number(activeClip.commentCount)) : 0);
+    setLikedByMe(!!activeClip.likedByMe);
+  }, [activeClip, hasClipFeed]);
+
+  const refreshEngagement = useCallback(async () => {
+    if (!postId) return;
+
+    const [{ count: likesCount }, { count: commentsCount }, sessionRes] = await Promise.all([
+      supabase.from("likes").select("id", { count: "exact", head: true }).eq("post_id", postId),
+      supabase.from("comments").select("id", { count: "exact", head: true }).eq("post_id", postId),
+      supabase.auth.getSession(),
+    ]);
+
+    if (typeof likesCount === "number") setLikeCount(Math.max(0, likesCount));
+    if (typeof commentsCount === "number") setCommentCount(Math.max(0, commentsCount));
+
+    const me = sessionRes.data.session?.user?.id;
+    if (!me) {
+      setLikedByMe(false);
+      return;
+    }
+
+    const { data: existingLike } = await supabase
+      .from("likes")
+      .select("id")
+      .eq("post_id", postId)
+      .eq("user_id", me)
+      .maybeSingle();
+
+    setLikedByMe(!!existingLike?.id);
+  }, [postId]);
+
+  useEffect(() => {
+    void refreshEngagement();
+  }, [refreshEngagement]);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -160,32 +391,45 @@ export default function ViewerScreen() {
   }, [images.length, initialIndex]);
 
   const onMomentumEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const x = e.nativeEvent.contentOffset.x;
-    const next = Math.round(x / SCREEN_WIDTH);
+    const offset = isVerticalClipFeed ? e.nativeEvent.contentOffset.y : e.nativeEvent.contentOffset.x;
+    const pageSize = isVerticalClipFeed ? SCREEN_HEIGHT : SCREEN_WIDTH;
+    const next = Math.round(offset / pageSize);
     setActiveIndex(Math.max(0, Math.min(next, images.length - 1)));
+    setZoomedIndex(null);
+    setClipPaused(false);
   };
 
-  // Fastest close for modal-style routes
+  useEffect(() => {
+    zoomedRef.current = zoomedIndex !== null && zoomedIndex === activeIndex;
+  }, [activeIndex, zoomedIndex]);
+
   const close = () => {
-    // @ts-ignore
-    if (typeof router.dismiss === "function") {
-      // @ts-ignore
-      router.dismiss();
+    const nav = router as any;
+
+    if (typeof nav.dismiss === "function" && (typeof nav.canDismiss !== "function" || nav.canDismiss())) {
+      nav.dismiss();
       return;
     }
-    router.back();
+
+    if (typeof nav.canGoBack === "function" && nav.canGoBack()) {
+      router.back();
+      return;
+    }
+
+    router.replace("/(tabs)");
   };
 
-  // PanResponder: only capture when gesture is mainly vertical (won't block horizontal swipes)
   const panResponder = useRef(
     PanResponder.create({
       onMoveShouldSetPanResponder: (_evt, gesture) => {
+        if (isVerticalClipFeed) return false;
+        if (zoomedRef.current || gesture.numberActiveTouches > 1) return false;
+
         const absDx = Math.abs(gesture.dx);
         const absDy = Math.abs(gesture.dy);
 
         if (absDx < 6 && absDy < 6) return false;
 
-        // Claim only if mostly vertical (lets left/right paging win)
         return absDy > absDx * 1.2;
       },
       onPanResponderGrant: () => {
@@ -193,22 +437,33 @@ export default function ViewerScreen() {
         backdropOpacity.stopAnimation();
       },
       onPanResponderMove: (_evt, gesture) => {
-        const dy = Math.max(0, gesture.dy); // only drag down
+        if (isVerticalClipFeed) return;
+        const dy = Math.max(0, gesture.dy);
         translateY.setValue(dy);
 
-        // fade background as you drag
         const fade = 1 - Math.min(dy / 320, 0.7);
         backdropOpacity.setValue(fade);
       },
       onPanResponderRelease: (_evt, gesture) => {
+        if (isVerticalClipFeed) return;
         const dy = Math.max(0, gesture.dy);
         const vy = gesture.vy;
 
-        // Easier + snappier dismiss
         const shouldDismiss = dy > 95 || vy > 0.9;
 
         if (shouldDismiss) {
-          close();
+          Animated.parallel([
+            Animated.timing(translateY, {
+              toValue: SCREEN_HEIGHT,
+              duration: 210,
+              useNativeDriver: true,
+            }),
+            Animated.timing(backdropOpacity, {
+              toValue: 0,
+              duration: 170,
+              useNativeDriver: true,
+            }),
+          ]).start(() => close());
           return;
         }
 
@@ -230,9 +485,28 @@ export default function ViewerScreen() {
     })
   ).current;
 
-  const renderItem = ({ item }: { item: string }) => (
+  const renderItem = ({ item, index }: { item: string; index: number }) => (
     <View style={[styles.page, { width: SCREEN_WIDTH, height: SCREEN_HEIGHT }]}>
-      <Image source={{ uri: item }} style={styles.image} resizeMode="contain" />
+      {isVideoUrl(item) ? (
+        Math.abs(index - activeIndex) <= 1 ? (
+          <Pressable style={{ flex: 1, width: SCREEN_WIDTH, height: SCREEN_HEIGHT }} onPress={() => setClipPaused((p) => !p)}>
+            <ViewerVideo uri={item} isActive={index === activeIndex} isMuted={clipMuted} isPaused={clipPaused} />
+          </Pressable>
+        ) : (
+          <View style={{ flex: 1, width: SCREEN_WIDTH, height: SCREEN_HEIGHT, backgroundColor: "#000" }} />
+        )
+      ) : (
+        <ZoomableImage
+          uri={item}
+          isActive={index === activeIndex}
+          onZoomStateChange={(zoomed) => {
+            setZoomedIndex((current) => {
+              if (zoomed) return index;
+              return current === index ? null : current;
+            });
+          }}
+        />
+      )}
     </View>
   );
 
@@ -254,6 +528,12 @@ export default function ViewerScreen() {
     if (error) throw new Error(error.message);
   }
 
+  async function deletePostOnly() {
+    if (!postId) throw new Error("Missing postId for delete.");
+    const { error } = await supabase.from("posts").delete().eq("id", postId);
+    if (error) throw new Error(error.message);
+  }
+
   async function tryDeleteFromStorage(maybePathOrUrl: string) {
     if (looksLikeHttpUrl(maybePathOrUrl)) return;
 
@@ -269,7 +549,7 @@ export default function ViewerScreen() {
   }
 
   const handleDeleteCurrent = () => {
-    if (!canDelete || busy) return;
+    if (!canDeleteInViewer || busy) return;
 
     const urlToDelete = images[activeIndex];
     if (!urlToDelete) return;
@@ -287,6 +567,9 @@ export default function ViewerScreen() {
               setBusy(true);
 
               await deleteFromDbOnly(urlToDelete);
+              if (images.length <= 1) {
+                await deletePostOnly();
+              }
               await tryDeleteFromStorage(urlToDelete);
 
               close();
@@ -303,7 +586,7 @@ export default function ViewerScreen() {
   };
 
   const handleDeleteAll = () => {
-    if (!canDelete || busy) return;
+    if (!canDeleteInViewer || busy) return;
 
     Alert.alert(
       "Delete all photos?",
@@ -318,6 +601,7 @@ export default function ViewerScreen() {
               setBusy(true);
 
               await deleteAllFromDbOnly();
+              await deletePostOnly();
 
               for (const u of images) {
                 await tryDeleteFromStorage(u);
@@ -347,6 +631,57 @@ export default function ViewerScreen() {
   };
 
   const closeReport = () => setReportOpen(false);
+
+  const openMessage = () => {
+    if (!ownerId) {
+      Alert.alert("Cannot message", "Profile owner information is not available.");
+      return;
+    }
+    router.push({ pathname: "/messages", params: { id: ownerId } });
+  };
+
+  const openComments = () => {
+    if (!postId) return;
+    router.push({ pathname: "/post", params: { id: postId } });
+  };
+
+  const openAuthorProfile = () => {
+    if (!ownerId) return;
+    router.push({ pathname: "/rider", params: { id: ownerId } });
+  };
+
+  const toggleLike = async () => {
+    if (!postId || liking) return;
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const session = sessionData.session;
+    if (!session) {
+      router.replace("/sign-in");
+      return;
+    }
+
+    const me = session.user.id;
+    const nextLiked = !likedByMe;
+    setLiking(true);
+    setLikedByMe(nextLiked);
+    setLikeCount((prev) => Math.max(0, prev + (nextLiked ? 1 : -1)));
+
+    try {
+      if (nextLiked) {
+        const { error } = await supabase.from("likes").upsert({ post_id: postId, user_id: me }, { onConflict: "post_id,user_id", ignoreDuplicates: true });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from("likes").delete().eq("post_id", postId).eq("user_id", me);
+        if (error) throw error;
+      }
+    } catch (e: any) {
+      setLikedByMe(!nextLiked);
+      setLikeCount((prev) => Math.max(0, prev + (nextLiked ? -1 : 1)));
+      Alert.alert("Like failed", e?.message ?? "Could not update like right now.");
+    } finally {
+      setLiking(false);
+    }
+  };
 
   const submitReport = async () => {
     if (!postId) return;
@@ -398,17 +733,14 @@ export default function ViewerScreen() {
   }) => {
     const active = reportReason === value;
     return (
-      <Pressable
+      <AnimatedSelectableButton
+        label={label}
+        active={active}
         onPress={() => setReportReason(value)}
-        style={[
-          styles.reasonChip,
-          active ? { backgroundColor: "rgba(255,255,255,0.92)" } : { backgroundColor: COLORS.chip },
-        ]}
-      >
-        <Text style={{ color: active ? "#000" : COLORS.text, fontWeight: "900", fontSize: 12 }}>
-          {label}
-        </Text>
-      </Pressable>
+        containerStyle={styles.reasonChip}
+        pressableStyle={{ paddingVertical: 8, paddingHorizontal: 14 }}
+        textStyle={{ fontSize: 12 }}
+      />
     );
   };
 
@@ -416,7 +748,7 @@ export default function ViewerScreen() {
     return (
       <View style={styles.container}>
         <StatusBar barStyle="light-content" />
-        <View style={styles.topBar}>
+        <View style={[styles.topBar, { paddingTop: Math.max(8, insets.top + 6) }]}>
           <Pressable onPress={close} style={styles.closeBtn}>
             <Text style={styles.closeText}>✕</Text>
           </Pressable>
@@ -432,12 +764,10 @@ export default function ViewerScreen() {
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
 
-      {/* Backdrop fade */}
       <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: backdropOpacity, backgroundColor: "#000" }]} />
 
-      {/* Swipe-down-to-dismiss wrapper */}
-      <Animated.View style={{ flex: 1, transform: [{ translateY }] }} {...panResponder.panHandlers}>
-        <View style={styles.topBar}>
+      <Animated.View style={{ flex: 1, transform: [{ translateY }] }} {...(!isVerticalClipFeed ? panResponder.panHandlers : {})}>
+        <View style={[styles.topBar, { paddingTop: Math.max(8, insets.top + 6) }]}>
           <Pressable onPress={close} style={styles.closeBtn}>
             <Text style={styles.closeText}>✕</Text>
           </Pressable>
@@ -446,7 +776,6 @@ export default function ViewerScreen() {
             {activeIndex + 1} / {images.length}
           </Text>
 
-          {/* Right side actions */}
           <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}>
             {canReport ? (
               <Pressable onPress={openReport} style={styles.actionBtn} disabled={reporting || busy}>
@@ -454,7 +783,14 @@ export default function ViewerScreen() {
               </Pressable>
             ) : null}
 
-            {canDelete ? (
+            {ownerId ? (
+              <Pressable onPress={openMessage} style={styles.actionBtn} disabled={busy}>
+                <Ionicons name="chatbubble-outline" size={16} color="#fff" />
+                <Text style={styles.actionText}>Message</Text>
+              </Pressable>
+            ) : null}
+
+            {canDeleteInViewer ? (
               <>
                 <Pressable
                   onPress={handleDeleteCurrent}
@@ -476,7 +812,7 @@ export default function ViewerScreen() {
               </>
             ) : null}
 
-            {!canDelete && !canReport ? <View style={{ width: 44 }} /> : null}
+            {!canDeleteInViewer && !canReport && !ownerId ? <View style={{ width: 44 }} /> : null}
           </View>
         </View>
 
@@ -485,14 +821,22 @@ export default function ViewerScreen() {
           data={images}
           keyExtractor={(u, i) => `${i}:${u}`}
           renderItem={renderItem}
-          horizontal
+          horizontal={!isVerticalClipFeed}
           pagingEnabled
+          scrollEnabled={!zoomedRef.current}
+          decelerationRate="fast"
+          removeClippedSubviews={false}
           showsHorizontalScrollIndicator={false}
+          showsVerticalScrollIndicator={false}
           onMomentumScrollEnd={onMomentumEnd}
+          windowSize={isVerticalClipFeed ? 3 : 5}
+          initialNumToRender={isVerticalClipFeed ? 3 : 1}
+          maxToRenderPerBatch={isVerticalClipFeed ? 2 : 3}
+          updateCellsBatchingPeriod={isVerticalClipFeed ? 60 : 50}
           initialScrollIndex={initialIndex}
           getItemLayout={(_, index) => ({
-            length: SCREEN_WIDTH,
-            offset: SCREEN_WIDTH * index,
+            length: isVerticalClipFeed ? SCREEN_HEIGHT : SCREEN_WIDTH,
+            offset: (isVerticalClipFeed ? SCREEN_HEIGHT : SCREEN_WIDTH) * index,
             index,
           })}
           onScrollToIndexFailed={() => {
@@ -512,9 +856,48 @@ export default function ViewerScreen() {
             ))}
           </View>
         )}
+
+        {isClipActive ? (
+          <Pressable
+            onPress={openAuthorProfile}
+            style={[styles.clipAuthorWrap, { top: Math.max(70, insets.top + 56) }]}
+          >
+            {authorAvatarUrl ? (
+              <Image source={{ uri: authorAvatarUrl }} style={styles.clipAuthorAvatar} />
+            ) : (
+              <View style={[styles.clipAuthorAvatar, styles.clipAuthorAvatarFallback]}>
+                <Ionicons name="person" size={16} color="#fff" />
+              </View>
+            )}
+            <Text style={styles.clipAuthorName} numberOfLines={1}>
+              {authorName || "Rider"}
+            </Text>
+          </Pressable>
+        ) : null}
+
+        {isClipActive ? (
+          <View style={[styles.clipActionsWrap, { bottom: Math.max(30, insets.bottom + 14) }]}>
+            <Pressable onPress={toggleLike} style={styles.clipActionBtn} disabled={liking}>
+              <Ionicons name={likedByMe ? "heart" : "heart-outline"} size={24} color={likedByMe ? "#FF5A7A" : "#fff"} />
+              <Text style={styles.clipActionCount}>{likeCount}</Text>
+            </Pressable>
+
+            <Pressable onPress={openComments} style={styles.clipActionBtn}>
+              <Ionicons name="chatbubble-outline" size={22} color="#fff" />
+              <Text style={styles.clipActionCount}>{commentCount}</Text>
+            </Pressable>
+
+            <Pressable onPress={() => setClipMuted((m) => !m)} style={styles.clipActionBtn}>
+              <Ionicons name={clipMuted ? "volume-mute" : "volume-medium"} size={22} color="#fff" />
+            </Pressable>
+
+            <Pressable onPress={() => setClipPaused((p) => !p)} style={styles.clipActionBtn}>
+              <Ionicons name={clipPaused ? "play" : "pause"} size={22} color="#fff" />
+            </Pressable>
+          </View>
+        ) : null}
       </Animated.View>
 
-      {/* Report modal */}
       <Modal transparent visible={reportOpen} animationType="fade" onRequestClose={closeReport}>
         <Pressable onPress={closeReport} style={styles.modalBackdrop}>
           <Pressable onPress={() => {}} style={styles.modalCard}>
@@ -580,7 +963,7 @@ const styles = StyleSheet.create({
   },
   topBar: {
     position: "absolute",
-    top: Platform.OS === "android" ? 10 : 18,
+    top: 0,
     left: 0,
     right: 0,
     zIndex: 10,
@@ -616,8 +999,10 @@ const styles = StyleSheet.create({
     minWidth: 64,
     paddingHorizontal: 14,
     borderRadius: 999,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    gap: 6,
     backgroundColor: COLORS.btnBg,
     borderWidth: 1,
     borderColor: COLORS.btnBorder,
@@ -641,6 +1026,13 @@ const styles = StyleSheet.create({
   page: {
     alignItems: "center",
     justifyContent: "center",
+  },
+  zoomViewport: {
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
   },
   image: {
     width: SCREEN_WIDTH,
@@ -667,6 +1059,59 @@ const styles = StyleSheet.create({
   dotInactive: {
     backgroundColor: "rgba(255,255,255,0.35)",
   },
+  clipActionsWrap: {
+    position: "absolute",
+    right: 12,
+    alignItems: "center",
+    gap: 14,
+  },
+  clipAuthorWrap: {
+    position: "absolute",
+    left: 12,
+    maxWidth: SCREEN_WIDTH * 0.65,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: 999,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    backgroundColor: "rgba(0,0,0,0.38)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+  },
+  clipAuthorAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.16)",
+  },
+  clipAuthorAvatarFallback: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  clipAuthorName: {
+    color: "#fff",
+    fontWeight: "900",
+    fontSize: 13,
+    maxWidth: SCREEN_WIDTH * 0.5,
+  },
+  clipActionBtn: {
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    minWidth: 52,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    borderRadius: 16,
+    backgroundColor: "rgba(0,0,0,0.36)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+  },
+  clipActionCount: {
+    color: "#fff",
+    fontWeight: "900",
+    fontSize: 12,
+  },
   emptyWrap: {
     flex: 1,
     alignItems: "center",
@@ -679,7 +1124,6 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
 
-  // Modal styles
   modalBackdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.60)",
@@ -719,10 +1163,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   reasonChip: {
-    paddingVertical: 8,
-    paddingHorizontal: 10,
     borderRadius: 999,
-    borderWidth: 1,
-    borderColor: COLORS.border,
   },
 });

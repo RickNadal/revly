@@ -1,7 +1,7 @@
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import React, { useCallback, useState } from "react";
 import { FlatList, Pressable, Text, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { supabase } from "../lib/supabase";
 
 type Row = { id: string; full_name: string };
@@ -15,6 +15,7 @@ const COLORS = {
 };
 
 export default function FollowersScreen() {
+  const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ id?: string }>();
   const targetId = params.id;
 
@@ -70,7 +71,7 @@ export default function FollowersScreen() {
   );
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right", "bottom"]}>
       <View style={{ flex: 1, paddingHorizontal: 16, paddingTop: 8 }}>
         <Text style={{ fontSize: 26, fontWeight: "900", color: COLORS.text }}>Followers</Text>
         <Text style={{ marginTop: 4, color: COLORS.muted, fontWeight: "700" }}>
@@ -84,6 +85,7 @@ export default function FollowersScreen() {
             style={{ marginTop: 12 }}
             data={rows}
             keyExtractor={(item) => item.id}
+            contentContainerStyle={{ paddingBottom: Math.max(insets.bottom + 12, 24) }}
             renderItem={({ item }) => (
               <Pressable
                 onPress={() => router.push({ pathname: "/rider", params: { id: item.id } })}
@@ -104,7 +106,6 @@ export default function FollowersScreen() {
               </Pressable>
             )}
             ListEmptyComponent={<Text style={{ marginTop: 14, color: COLORS.muted }}>No followers yet.</Text>}
-            contentContainerStyle={{ paddingBottom: 24 }}
           />
         )}
       </View>
